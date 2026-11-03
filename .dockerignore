@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+.env.*
+data
+test
+docs
+scripts
+artifacts
+*.log
+**/*.bak
+README.md
