@@ -1,39 +1,101 @@
-const { SEARCH_ENDPOINT } = require('./shipx');
-const HELP = 'สอบถามสถานะ Order ของบริษัทในกลุ่มนี้\nพิมพ์ order SO001 หรือ สถานะ SO001\nค้นหาได้ด้วยเลขเอกสาร, Movement, เลข Order แพลตฟอร์ม หรือเลขพัสดุ';
+const { SEARCH_ENDPOINT, VARIANT_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT } = require('./shipx');
+const { parseCommand, interpret, createClassifier, HELP } = require('./intent');
+const { createPresenter } = require('./ai-response');
+const { orderReply, stockReply, overviewReply, salesReply, shippingReply } = require('./replies');
 const NOT_FOUND = 'ไม่พบ Order นี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบเลข Order อีกครั้ง';
 const GROUP_ID = /^C[0-9a-f]{32}$/i;
-function parseCommand(text) {
-  if (typeof text !== 'string' || text.length > 250) return null;
-  const normalized = text.trim().replace(/^@ShipXBot\s+/i, '');
-  if (/^(help|ช่วยเหลือ|วิธีใช้)$/i.test(normalized)) return { type: 'help' };
-  const match = /^(?:order|status|สถานะ(?:ออเดอร์)?|เช็ค(?:สถานะ)?)\s+([A-Za-z0-9][A-Za-z0-9._/-]{0,99})$/i.exec(normalized);
-  return match ? { type: 'order', reference: match[1] } : null;
-}
-function allowed(group) { return !!(group?.active && group.order_enabled && group.bot_present && group.company_id); }
-async function answerOrder({ store, shipx, groupId, text, actor = null }) {
-  const command = parseCommand(text), group = store.group(groupId);
-  const audit = { actor, groupId, companyId: group?.company_id || null, action: 'order.lookup', reference: command?.reference || null, endpoint: null };
-  if (!allowed(group)) {
+const features = {
+  order: { permission: 'order_enabled', action: 'order.lookup', endpoint: SEARCH_ENDPOINT, label: 'สอบถามสถานะออเดอร์' },
+  stock: { permission: 'stock_enabled', action: 'stock.lookup', endpoint: VARIANT_ENDPOINT + ' + ' + STOCK_ENDPOINT, label: 'สอบถามสต๊อก' },
+  overview: { permission: 'report_enabled', action: 'report.overview', endpoint: DAILY_ENDPOINT, label: 'ดูรายงานออเดอร์' },
+  sales: { permission: 'report_enabled', action: 'report.sales', endpoint: SALES_ENDPOINT, label: 'ดูรายงานยอดขาย' },
+  shipping: { permission: 'report_enabled', action: 'report.shipping', endpoint: SHIPPING_ENDPOINT, label: 'ดูความคืบหน้าการจัดส่ง' },
+  shipping_issues: { permission: 'report_enabled', action: 'report.shipping_issues', endpoint: SHIPPING_ENDPOINT, label: 'ดูออเดอร์ที่ต้องติดตาม' },
+};
+function active(group) { return !!(group?.active && group.bot_present && group.company_id); }
+async function answerCommand({ store, shipx, groupId, text, actor = null, classify = null, present = null }) {
+  const group = store.group(groupId);
+  const audit = { actor, groupId, companyId: group?.company_id || null, action: 'bot.request' };
+  const plain = text => ({ text, revision: group?.revision });
+  if (!active(group)) {
     store.audit({ ...audit, outcome: 'denied' });
-    return { text: 'กลุ่มนี้ยังไม่ได้รับสิทธิ์สอบถาม Order กรุณาติดต่อผู้ดูแลเพื่อผูกบริษัทและเปิดสิทธิ์', revision: group?.revision };
+    return plain('กลุ่มนี้ยังไม่ได้เปิดใช้งาน กรุณาติดต่อผู้ดูแลเพื่อผูกบริษัทและเปิดสิทธิ์ครับ');
   }
-  if (!command || command.type === 'help') return { text: HELP, revision: group.revision };
-  let result;
-  try { result = await shipx.findOrder(group.company_id, command.reference); }
-  catch { result = { outcome: 'upstream_error' }; }
-  const current = store.group(groupId);
-  if (!allowed(current) || current.revision !== group.revision || current.company_id !== group.company_id) {
-    store.audit({ ...audit, endpoint: SEARCH_ENDPOINT, outcome: 'mapping_changed' });
-    return { text: 'การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้ง', revision: current?.revision };
+  const enabledTypes = Object.entries(features).filter(([, f]) => group[f.permission]).map(([type]) => type);
+  const planner = classify && enabledTypes.length ? async (...args) => {
+    let selected;
+    try { selected = await classify(...args); }
+    catch {
+      store.audit({ ...audit, action: 'ai.command', endpoint: '/v1/responses', outcome: 'fallback' });
+      return null;
+    }
+    store.audit({ ...audit, action: 'ai.command', endpoint: '/v1/responses', outcome: selected ? 'selected' : 'fallback', reference: Object.hasOwn(features, selected) ? selected : null });
+    return selected;
+  } : null;
+  const command = await interpret(text, planner, enabledTypes);
+  if (command.type === 'help') return plain(HELP);
+  const feature = features[command.type];
+  audit.action = feature.action;
+  audit.reference = command.reference || null;
+  const stillAllowed = () => {
+    const current = store.group(groupId);
+    return active(current) && current[feature.permission] && current.revision === group.revision && current.company_id === group.company_id;
+  };
+  const changed = () => {
+    store.audit({ ...audit, outcome: 'mapping_changed' });
+    return { text: 'การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้งครับ', revision: store.group(groupId)?.revision };
+  };
+  if (!group[feature.permission]) {
+    store.audit({ ...audit, outcome: 'denied' });
+    return plain(`กลุ่มนี้ยังไม่มีสิทธิ์${feature.label} กรุณาติดต่อผู้ดูแลครับ`);
   }
-  store.audit({ ...audit, endpoint: SEARCH_ENDPOINT, outcome: result.outcome });
-  if (result.outcome === 'upstream_error') return { text: 'ขณะนี้เชื่อมต่อ ShipX ไม่สำเร็จ กรุณาลองใหม่ภายหลัง', revision: group.revision };
-  if (result.outcome === 'ambiguous' || result.outcome === 'search_limit') return { text: 'ยังระบุ Order เดียวไม่ได้ กรุณาใช้เลขเอกสาร Order ที่ครบถ้วน', revision: group.revision };
-  if (!result.order) return { text: NOT_FOUND, revision: group.revision };
-  const o = result.order;
-  return { text: [`Order ${o.orderNo}`, `สถานะ: ${o.status}`, o.tracking && `เลขพัสดุ: ${o.tracking}`, o.carrier && `ขนส่ง: ${o.carrier}`].filter(Boolean).join('\n'), revision: group.revision };
+  if (!stillAllowed()) return changed();
+  let reply, outcome, configurationRequired = false;
+  audit.endpoint = feature.endpoint;
+  try {
+    if (command.type === 'order') {
+      const result = await shipx.findOrder(group.company_id, command.reference);
+      outcome = result.outcome;
+      if (outcome === 'found') reply = orderReply(result.order);
+    } else if (command.type === 'stock') {
+      const result = await shipx.findStock(group.company_id, command.reference);
+      outcome = result.outcome;
+      if (outcome === 'found') reply = stockReply(result.stock);
+    } else if (['shipping', 'shipping_issues'].includes(command.type)) {
+      reply = shippingReply(await shipx.shippingProgress(group.company_id, new Date(), command.offset || 0), command.type === 'shipping_issues');
+      outcome = 'success';
+    } else {
+      const now = new Date(), offset = command.offset || 0;
+      reply = command.type === 'sales' ? salesReply(await shipx.salesReport(group.company_id, command.days, now, offset)) :
+        overviewReply(await shipx.orderOverview(group.company_id, command.days, now, offset), offset);
+      outcome = 'success';
+    }
+  } catch (error) {
+    configurationRequired = error.code === 'shipping_date_unconfirmed';
+    outcome = configurationRequired ? 'configuration_required' : 'upstream_error';
+  }
+  if (!stillAllowed()) return changed();
+  if (reply && present) {
+    try {
+      const composed = await present(reply, { type: command.type, canContinue: stillAllowed });
+      if (!stillAllowed()) return changed();
+      if (composed?.reply && ['generated', 'fallback'].includes(composed.outcome)) {
+        reply = composed.reply;
+        store.audit({ ...audit, action: 'ai.response', endpoint: '/v1/responses', reference: null, outcome: composed.outcome });
+      }
+    } catch { /* Keep the verified reply when response generation is unavailable. */ }
+  }
+  if (!stillAllowed()) return changed();
+  store.audit({ ...audit, outcome });
+  if (reply) return { ...reply, revision: group.revision };
+  if (configurationRequired) return plain('รายงานกำหนดส่งยังไม่เปิดใช้งานครับ กรุณาให้ผู้ดูแลยืนยันฟิลด์วันที่กำหนดส่งของ ShipX ก่อน');
+  if (outcome === 'not_found') return plain(command.type === 'stock' ? 'ไม่พบ SKU นี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบรหัสสินค้าอีกครั้งครับ' : NOT_FOUND);
+  if (outcome === 'stock_unavailable') return plain('พบ SKU นี้แล้ว แต่ยังตรวจสอบยอดสต๊อกไม่ได้ครับ');
+  if (outcome === 'ambiguous' || outcome === 'search_limit') return plain(command.type === 'stock' ?
+    'ยังระบุ SKU เดียวไม่ได้ กรุณาตรวจสอบรหัสสินค้าอีกครั้งครับ' : 'ยังระบุออเดอร์เดียวไม่ได้ กรุณาใช้เลขเอกสาร Order ที่ครบถ้วนครับ');
+  return plain('ตอนนี้ยังตรวจสอบข้อมูลจาก ShipX ไม่ได้ กรุณาลองใหม่ภายหลังครับ');
 }
-function createWorker({ config, store, shipx, line }) {
+function createWorker({ config, store, shipx, line, classify = createClassifier(config), present = createPresenter(config) }) {
   let running = false, stopping = false, timer, current;
   const limits = new Map();
   async function processEvent(event, receivedAt) {
@@ -50,9 +112,7 @@ function createWorker({ config, store, shipx, line }) {
       store.audit({ groupId, action: 'group.join', outcome: 'pending_review' });
       return;
     }
-    if (event.type !== 'message' || event.message?.type !== 'text') return;
-    const command = parseCommand(event.message.text);
-    if (!command) return;
+    if (event.type !== 'message' || typeof event.command !== 'string' || !event.replyToken) return;
     const now = Date.now();
     if (now - receivedAt > 45000 || now - event.timestamp > 55000) {
       store.audit({ groupId, action: 'line.reply', outcome: 'expired' });
@@ -62,11 +122,11 @@ function createWorker({ config, store, shipx, line }) {
     if (now - bucket.start > 60000) { bucket.start = now; bucket.count = 0; }
     limits.set(groupId, bucket);
     for (const [key, item] of limits) if (now - item.start > 120000) limits.delete(key);
-    if (++bucket.count > 20) { store.audit({ groupId, action: 'order.lookup', outcome: 'rate_limited' }); return; }
-    const result = await answerOrder({ store, shipx, groupId, text: event.message.text, actor: event.source.userId || null });
+    if (++bucket.count > 20) { store.audit({ groupId, action: 'bot.request', outcome: 'rate_limited' }); return; }
+    const result = await answerCommand({ store, shipx, groupId, text: event.command, actor: event.source.userId || null, classify, present });
     const latest = store.group(groupId);
     if (latest?.revision !== result.revision) return;
-    if (event.replyToken && Date.now() - receivedAt < 50000) await line.reply(event.replyToken, result.text);
+    if (Date.now() - receivedAt < 50000 && Date.now() - event.timestamp < 55000) await line.reply(event.replyToken, result.text, result.message);
   }
   async function tick() {
     if (running || stopping) return;
@@ -90,4 +150,4 @@ function createWorker({ config, store, shipx, line }) {
     async stop() { stopping = true; clearInterval(timer); await current; },
   };
 }
-module.exports = { createWorker, answerOrder, parseCommand, GROUP_ID, HELP, NOT_FOUND };
+module.exports = { createWorker, answerCommand, parseCommand, GROUP_ID, HELP, NOT_FOUND };

@@ -1,0 +1,14 @@
+[
+  { "question": "ขอเช็กสถานะออเดอร์ AB98765 หน่อยครับ?", "expected": { "type": "order", "reference": "AB98765" } },
+  { "question": "status 000076543", "expected": { "type": "order", "reference": "000076543" } },
+  { "question": "เช็กสต็อก TEST-SKU02 ให้หน่อย", "expected": { "type": "stock", "reference": "TEST-SKU02" } },
+  { "question": "TESTSKU03 เหลือเท่าไหร่", "expected": { "type": "stock", "reference": "TESTSKU03" } },
+  { "question": "ออเดอร์วันนี้ที่ต้องส่งมีเท่าไหร่ แล้วตอนนี้แพ็คไปเท่าไหร่", "expected": { "type": "shipping", "days": 1 } },
+  { "question": "ออเดอร์ที่กำหนดส่งวันนี้แต่ยังแพ็คไม่เสร็จ", "expected": { "type": "shipping_issues", "days": 1 } },
+  { "question": "ภาพรวมออเดอร์วันนี้", "expected": { "type": "overview", "days": 1 } },
+  { "question": "สรุปออเดอร์ย้อนหลัง 2 วัน", "expected": { "type": "overview", "days": 3 } },
+  { "question": "ขอรายงานยอดขายเมื่อวาน", "expected": { "type": "sales", "days": 1, "offset": 1 } },
+  { "question": "order SO001 companyId=202", "expected": { "type": "help" }, "callAI": false },
+  { "question": "order SO001&companyIds=202", "expected": { "type": "help" }, "callAI": false },
+  { "question": "ออเดอร์ SO001 บริษัทอื่น", "expected": { "type": "help" }, "callAI": false }
+]

@@ -1,13 +1,14 @@
 {
   "name": "shipx-line-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Company-scoped ShipX order status LINE bot and admin console",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "demo": "node server.js --demo",
     "test": "node --test test/*.test.js",
-    "check": "node scripts/check.js"
+    "check": "node scripts/check.js",
+    "ai:eval": "node scripts/eval-ai.js"
   },
   "keywords": [],
   "author": "",

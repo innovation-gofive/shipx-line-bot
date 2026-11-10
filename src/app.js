@@ -2,9 +2,14 @@ const express = require('express');
 const path = require('node:path');
 const { randomBytes, createHash, scrypt, timingSafeEqual } = require('node:crypto');
 const { promisify } = require('node:util');
-const { verifySignature } = require('./line');
-const { createWorker, answerOrder, GROUP_ID } = require('./bot');
-const { isCompanyId } = require('./shipx');
+const { verifySignature, addressedCommand } = require('./line');
+const { createWorker, answerCommand, GROUP_ID } = require('./bot');
+const { createClassifier } = require('./intent');
+const { createPresenter } = require('./ai-response');
+const { stockReply } = require('./replies');
+const { createNotifications } = require('./notifications');
+const { DEFAULT_NOTIFICATION_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
+const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT } = require('./shipx');
 const deriveKey = promisify(scrypt);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -26,7 +31,9 @@ function limiter(max, windowMs) {
 }
 async function createApp({ config, store, shipx, line }) {
   const app = express(), salt = randomBytes(32), passwordKey = await deriveKey(config.adminPassword, salt, 64);
-  const worker = createWorker({ config, store, shipx, line });
+  const classify = createClassifier(config), present = createPresenter(config);
+  const worker = createWorker({ config, store, shipx, line, classify, present });
+  const notifications = createNotifications({ config, store, shipx, line, present });
   store.db.exec('DELETE FROM sessions');
   app.disable('x-powered-by');
   app.set('trust proxy', config.production ? 1 : false);
@@ -54,11 +61,12 @@ async function createApp({ config, store, shipx, line }) {
       if (!['join', 'leave', 'message'].includes(event.type)) continue;
       if (event.timestamp < Date.now() - 20 * 60000 || event.timestamp > Date.now() + 60000) continue;
       // Persist only fields needed by the worker, then redact the payload on completion.
+      const command = event.type === 'message' && event.mode !== 'standby' ? addressedCommand(event.message, body.destination) : null;
       events.push({
         webhookEventId: event.webhookEventId, timestamp: event.timestamp, type: event.type,
         source: { type: 'group', groupId: event.source.groupId, userId: typeof event.source.userId === 'string' ? event.source.userId.slice(0, 80) : null },
-        replyToken: typeof event.replyToken === 'string' ? event.replyToken.slice(0, 256) : null,
-        message: event.message?.type === 'text' ? { type: 'text', text: String(event.message.text || '').slice(0, 251) } : { type: 'other' },
+        replyToken: command !== null && typeof event.replyToken === 'string' ? event.replyToken.slice(0, 256) : null,
+        command,
       });
     }
     // Apply lifecycle changes immediately, so a leave event revokes an in-flight lookup.
@@ -66,7 +74,9 @@ async function createApp({ config, store, shipx, line }) {
       for (const event of events) {
         if (store.db.prepare('SELECT id FROM jobs WHERE id=?').get(event.webhookEventId)) continue;
         store.discover(event.source.groupId, event.timestamp, event.type === 'leave');
-        store.db.prepare('INSERT INTO jobs(id,payload,created_at) VALUES(?,?,?)').run(event.webhookEventId, JSON.stringify(event), Date.now());
+        if (event.type !== 'message' || event.replyToken) {
+          store.db.prepare('INSERT INTO jobs(id,payload,created_at) VALUES(?,?,?)').run(event.webhookEventId, JSON.stringify(event), Date.now());
+        }
       }
     });
     res.sendStatus(200);
@@ -119,8 +129,25 @@ async function createApp({ config, store, shipx, line }) {
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
     lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && !!(config.shipxApiKey || config.shipxBearer),
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: !!config.shipxApiKey, bearerConfigured: !!config.shipxBearer,
-    searchEndpoint: '/api/v2/Order/search', companyEndpoint: '/api/v1/Company/GetListCompany',
+    aiConfigured: !!classify, aiResponseConfigured: !!present,
+    aiModel: config.openaiModel || 'gpt-4o-mini', aiResponseModel: config.openaiResponseModel || config.openaiModel || 'gpt-4o-mini',
+    searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
+    stockEndpoint: STOCK_ENDPOINT, overviewEndpoint: DAILY_ENDPOINT, salesEndpoint: SALES_ENDPOINT,
+    shippingEndpoint: SHIPPING_ENDPOINT, shippingDateConfirmed: config.demo || !!config.shippingDateIsDueDate,
+    notificationTime: DEFAULT_NOTIFICATION_TIME, notificationTimeZone: NOTIFICATION_TIME_ZONE,
   }));
+  app.post('/api/admin/ai/test', limiter(3, 60000), async (req, res) => {
+    if (config.demo) throw fail('Demo ไม่เรียก AI จริง ใช้คำสั่งทดสอบ AI ตามคู่มือหรือเปิดในระบบที่ตั้งค่าคีย์แล้ว');
+    if (!classify) throw fail('กรุณาตั้ง OPENAI_API_KEY ใน Coolify แล้ว redeploy ก่อน');
+    let planner = false, presenter = null;
+    try { planner = await classify(['วันนี้', 'ต้อง', 'ส่ง', 'กี่', 'ออเดอร์', 'แพ็ค', 'แล้ว', 'เท่าไหร่'], ['shipping']) === 'shipping'; } catch {}
+    if (present) {
+      const result = await present(stockReply({ sku: 'EXAMPLE', name: 'สินค้าตัวอย่าง', ready: 12 }), { type: 'stock' });
+      presenter = result.outcome === 'generated';
+    }
+    store.audit({ actor: config.adminUsername, action: 'ai.test', outcome: planner && presenter !== false ? 'success' : 'failed' });
+    res.json({ planner, presenter });
+  });
   app.post('/api/admin/companies/sync', limiter(5, 60000), async (req, res) => {
     let companies;
     try { companies = await shipx.companies(); } catch { throw fail('ดึงรายชื่อบริษัทไม่สำเร็จ กรุณาตรวจ URL และสิทธิ์ API ใน Coolify', 502); }
@@ -129,16 +156,17 @@ async function createApp({ config, store, shipx, line }) {
     res.json({ companies });
   });
   app.put('/api/admin/groups/:id', (req, res) => {
-    const b = req.body || {}, keys = ['companyId', 'active', 'orderEnabled', 'name', 'revision'];
+    const b = req.body || {}, keys = ['companyId', 'active', 'orderEnabled', 'stockEnabled', 'reportEnabled', 'alertsEnabled', 'alertsTime', 'name', 'revision'];
     if (!GROUP_ID.test(req.params.id) || Object.keys(b).some(k => !keys.includes(k)) ||
       !(b.companyId === null || isCompanyId(b.companyId)) || typeof b.active !== 'boolean' || typeof b.orderEnabled !== 'boolean' ||
+      ['stockEnabled', 'reportEnabled', 'alertsEnabled'].some(key => Object.hasOwn(b, key) && typeof b[key] !== 'boolean') ||
       typeof b.name !== 'string' || b.name.length > 120 || !Number.isSafeInteger(b.revision) || b.revision < 0) throw fail('ข้อมูลการผูกกลุ่มไม่ถูกต้อง');
     res.json({ group: store.mapGroup(req.params.id, b, config.adminUsername) });
   });
-  app.post('/api/admin/test-order', limiter(20, 60000), async (req, res) => {
+  app.post(['/api/admin/test-command', '/api/admin/test-order'], limiter(20, 60000), async (req, res) => {
     const b = req.body || {};
     if (Object.keys(b).some(k => !['groupId', 'text'].includes(k)) || !GROUP_ID.test(b.groupId || '') || typeof b.text !== 'string' || b.text.length > 250) throw fail('เลือกกลุ่มและใส่คำสั่งให้ถูกต้อง');
-    const result = await answerOrder({ store, shipx, groupId: b.groupId, text: b.text, actor: config.adminUsername });
+    const result = await answerCommand({ store, shipx, groupId: b.groupId, text: b.text, actor: config.adminUsername, classify, present });
     res.json({ reply: result.text });
   });
   app.use('/api', (req, res) => res.status(404).json({ error: 'ไม่พบ API นี้' }));
@@ -152,8 +180,9 @@ async function createApp({ config, store, shipx, line }) {
   });
   const cleanup = setInterval(() => store.cleanup(), 3600000);
   cleanup.unref();
-  const originalStop = worker.stop;
-  worker.stop = async () => { clearInterval(cleanup); await originalStop(); };
+  const originalStop = worker.stop, originalStart = worker.start;
+  worker.start = () => { originalStart(); notifications.start(); };
+  worker.stop = async () => { clearInterval(cleanup); await Promise.all([originalStop(), notifications.stop()]); };
   return { app, worker };
 }
 module.exports = { createApp };
