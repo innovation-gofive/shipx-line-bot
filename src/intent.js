@@ -1,5 +1,6 @@
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/;
 const policy = require('./ai-policy.json');
+const { DEFAULT_RESPONSES_URL } = require('./ai-config');
 const HELP = 'เลือก @ShipX Bot ใน LINE แล้วพิมพ์คำถามได้เลยครับ\n• ออเดอร์ SO001 ให้หน่อย\n• เช็กสต๊อก SKU001\n• วันนี้ต้องส่งกี่ออเดอร์ แพ็คแล้วเท่าไหร่\n• ออเดอร์ที่กำหนดส่งวันนี้แต่ยังแพ็คไม่เสร็จ\n• สรุปออเดอร์ย้อนหลัง 2 วัน\n• รายงานยอดขายวันนี้';
 const orderWords = /ออเดอร์|ออร์เดอร์|คำสั่งซื้อ|สถานะ|พัสดุ|ติดตาม|order|tracking|status/i;
 const stockWords = /สต(?:๊|็)อก|สต็อค|คงเหลือ|เหลือ\s*(?:เท่าไหร่|เท่าไร|กี่)|พร้อมขาย|\bstock\b|\bsku\b/i;
@@ -91,7 +92,7 @@ function createClassifier(config, fetcher = fetch) {
   return async function classify(tokens, allowedTypes = Object.keys(toolsByType)) {
     const enabled = new Set([...allowedTypes, 'help']);
     const definitions = Object.entries(toolsByType).filter(([type]) => enabled.has(type));
-    const response = await fetcher('https://api.openai.com/v1/responses', {
+    const response = await fetcher(config.openaiResponsesUrl || DEFAULT_RESPONSES_URL, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4500),
       headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -1,4 +1,5 @@
 const path = require('node:path');
+const { loadAIConfig } = require('./ai-config');
 function loadConfig(env, demoFlag = false) {
   const demo = demoFlag || env.SHIPX_MODE === 'demo';
   const production = env.NODE_ENV === 'production';
@@ -27,9 +28,7 @@ function loadConfig(env, demoFlag = false) {
     databasePath,
     lineSecret: demo ? '' : env.LINE_CHANNEL_SECRET, lineToken: demo ? '' : env.LINE_CHANNEL_ACCESS_TOKEN,
     shipxBaseUrl: baseUrl, shipxApiKey: env.SHIPX_API_KEY || '', shipxBearer: env.SHIPX_BEARER_TOKEN || '',
-    openaiApiKey: demo ? '' : (env.OPENAI_API_KEY || ''), openaiModel: env.OPENAI_MODEL || 'gpt-4o-mini',
-    openaiResponseModel: env.OPENAI_RESPONSE_MODEL || env.OPENAI_MODEL || 'gpt-4o-mini',
-    aiResponseEnabled: env.AI_RESPONSE_ENABLED !== 'false',
+    ...loadAIConfig(env, demo),
     shippingDateIsDueDate: env.SHIPX_SHIPPING_DATE_IS_DUE_DATE !== 'false',
   };
 }

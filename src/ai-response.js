@@ -1,5 +1,6 @@
 const policy = require('./ai-policy.json');
 const { card } = require('./replies');
+const { DEFAULT_RESPONSES_URL } = require('./ai-config');
 const permutation = (actual, expected) => Array.isArray(actual) && actual.length === expected.length &&
   new Set(actual).size === actual.length && actual.every(id => expected.includes(id));
 
@@ -53,7 +54,7 @@ function createPresenter(config, fetcher = fetch) {
     const fallback = { reply, outcome: 'fallback' };
     if (!spec || !canContinue()) return fallback;
     try {
-      const response = await fetcher('https://api.openai.com/v1/responses', {
+      const response = await fetcher(config.openaiResponsesUrl || DEFAULT_RESPONSES_URL, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4500),
         headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({

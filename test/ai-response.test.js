@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Store } = require('../src/store');
 const { ShipXClient } = require('../src/shipx');
+const { loadAIConfig, DEFAULT_RESPONSES_URL } = require('../src/ai-config');
 const { createClassifier } = require('../src/intent');
 const { createPresenter, applyPresentation, presentationSpec } = require('../src/ai-response');
 const { stockReply, shippingReply, orderReply } = require('../src/replies');
@@ -15,6 +16,35 @@ function draft(reply,type,extra={}) {
 }
 const completion=plan=>response({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(plan)}]}]});
 function setup(t) { const store=new Store(':memory:');store.seedDemo();t.after(()=>store.close());return store; }
+
+test('classifier and presenter use the configured Responses gateway and bearer key', async () => {
+  const config = loadAIConfig({
+    OPENAI_BASE_URL: ' https://gateway.example.test/v1/ ', OPENAI_API_KEY: 'mock-key',
+    OPENAI_MODEL: 'gateway-tools', OPENAI_RESPONSE_MODEL: 'gateway-json',
+  });
+  const reply = stockReply({ sku: 'EXAMPLE', name: 'Product', ready: 12 });
+  const calls = [];
+  const fetcher = async (url, options) => {
+    assert.equal(url, 'https://gateway.example.test/v1/responses');
+    assert.equal(options.headers.Authorization, 'Bearer mock-key');
+    assert.equal(options.redirect, 'error');
+    const body = JSON.parse(options.body);
+    calls.push(body.model);
+    return body.tools ? response({ output: [{ type: 'function_call', name: 'lookup_sellable_stock', arguments: '{}' }] }) : completion(draft(reply, 'stock'));
+  };
+  assert.equal(await createClassifier(config, fetcher)(['สต๊อก', '[REF_1]'], ['stock']), 'stock');
+  assert.equal((await createPresenter(config, fetcher)(reply, { type: 'stock' })).outcome, 'generated');
+  assert.deepEqual(calls, ['gateway-tools', 'gateway-json']);
+});
+
+test('AI base URL defaults to OpenAI and rejects unsafe values', () => {
+  assert.equal(loadAIConfig({}).openaiResponsesUrl, DEFAULT_RESPONSES_URL);
+  assert.equal(loadAIConfig({ OPENAI_BASE_URL: 'invalid', OPENAI_API_KEY: 'mock-key' }, true).openaiApiKey, '');
+  for (const value of ['gateway.example.test', 'http://gateway.example.test/v1', 'https://user:pass@gateway.example.test/v1',
+    'https://gateway.example.test/v1?token=unsafe', 'https://gateway.example.test/v1#hash']) {
+    assert.throws(() => loadAIConfig({ OPENAI_BASE_URL: value }), /OPENAI_BASE_URL must be an HTTPS API base URL/);
+  }
+});
 
 test('second AI call generates a validated card plan without receiving identifiers or upstream free text', async () => {
   const reply=orderReply({orderNo:'PRIVATE-ORDER',status:'กำลังแพ็คสินค้า',carrier:'PRIVATE-CARRIER',tracking:'001239999999'});

@@ -1,4 +1,4 @@
-// Explicit --live opts into billable OpenAI calls on synthetic fixtures only.
+// Explicit --live opts into billable AI calls on synthetic fixtures only.
 require('dotenv').config({ quiet: true });
 const assert = require('node:assert/strict');
 const { mkdirSync, writeFileSync } = require('node:fs');
@@ -6,10 +6,11 @@ const cases = require('../test/fixtures/ai-eval.json');
 const { interpret, createClassifier } = require('../src/intent');
 const { createPresenter, applyPresentation, presentationSpec } = require('../src/ai-response');
 const { stockReply } = require('../src/replies');
+const { loadAIConfig } = require('../src/ai-config');
 async function main() {
   const live=process.argv.includes('--live');
   if (live && !process.env.OPENAI_API_KEY) throw Error('Set OPENAI_API_KEY in .env or the current process before using --live. Do not put it in source code.');
-  const config={openaiApiKey:process.env.OPENAI_API_KEY,openaiModel:process.env.OPENAI_MODEL||'gpt-4o-mini',openaiResponseModel:process.env.OPENAI_RESPONSE_MODEL||process.env.OPENAI_MODEL||'gpt-4o-mini'};
+  const config={...loadAIConfig(process.env, !live), aiResponseEnabled:true};
   const classify=live?createClassifier(config):null;
   const results=[];
   for(const item of cases) {
@@ -26,7 +27,7 @@ async function main() {
     const composed=applyPresentation(reply,'stock',{title:spec.titles[0],summaryTemplate:spec.templates[0],density:'compact',sectionOrder:spec.sections.map(s=>s.id),rowOrder:spec.sections.flatMap(s=>s.rows)});
     presentationPassed=composed.text.includes('12')&&composed.text.includes('EXAMPLE');
   }
-  const report={mode:live?'live OpenAI / synthetic data':'offline / no network',cases:results,presentationPassed};
+  const report={mode:live?'live AI / synthetic data':'offline / no network',cases:results,presentationPassed};
   mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/ai-eval-report.json',JSON.stringify(report,null,2));
   const passed=results.filter(r=>r.pass).length;
   console.log(report.mode+': '+passed+'/'+results.length+' command cases; presentation '+(presentationPassed?'PASS':'FAIL'));
