@@ -40,6 +40,8 @@ test('migration preserves V1 mapping and requires opt-in to stock and reports', 
       const g = store.group(groupId);
       assert.deepEqual([g.company_id, g.active, g.order_enabled, g.stock_enabled, g.report_enabled, g.alerts_enabled, g.revision], [101,1,1,0,0,0,5]);
       assert.equal(g.alerts_time, '16:00');
+      assert.equal(g.shipping_summary_enabled, 0);
+      assert.equal(g.shipping_summary_time, '18:00');
     } finally { store.close(); }
   }
 });

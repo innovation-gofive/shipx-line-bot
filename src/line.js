@@ -38,10 +38,11 @@ class LineClient {
   }
   async push(groupId, message, retryKey) {
     if (this.config.demo) return;
+    const messages = Array.isArray(message) ? message : [message];
     const response = await this.fetcher('https://api.line.me/v2/bot/message/push', {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(7000),
       headers: { Authorization: `Bearer ${this.config.lineToken}`, 'Content-Type': 'application/json', 'X-Line-Retry-Key': retryKey },
-      body: JSON.stringify({ to: groupId, messages: [message] }),
+      body: JSON.stringify({ to: groupId, messages }),
     });
     if (response.ok || (response.status === 409 && response.headers.get('x-line-accepted-request-id'))) return;
     throw Object.assign(new Error(`LINE push HTTP ${response.status}`), { retryable: response.status >= 500 });

@@ -1,3 +1,4 @@
+const { shippingOrderSections } = require('./shipping-report');
 const ink = '#172338', muted = '#667489', accent = '#0B62BE', warning = '#9C420E';
 const number = new Intl.NumberFormat('th-TH');
 const money = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -5,23 +6,26 @@ const fmt = value => number.format(value);
 const dateLabel = date => date.split('-').reverse().join('/');
 const text = (value, options = {}) => ({ type: 'text', text: value, wrap: true, color: ink, size: 'sm', ...options });
 const box = (contents, options = {}) => ({ type: 'box', layout: 'vertical', contents, spacing: 'sm', ...options });
-const pair = ([label, value, highlight]) => ({
+const pair = ([label, value, highlight], emphasis) => ({
   type: 'box', layout: 'horizontal', spacing: 'sm',
-  contents: [text(label, { color: muted, flex: 4 }), text(value, { flex: 6, align: 'end', weight: 'bold', color: highlight ? warning : ink })],
+  contents: emphasis ? [
+    text(label, { flex: 4, gravity: 'center', weight: 'bold', color: '#FFFFFF', size: 'md' }),
+    text(value, { flex: 6, align: 'end', weight: 'bold', color: '#FFFFFF', size: 'xxl' }),
+  ] : [text(label, { color: muted, flex: 4 }), text(value, { flex: 6, align: 'end', weight: 'bold', color: highlight ? warning : ink })],
 });
 
 function card(title, subtitle, sections, note, altDetail = subtitle, metric) {
   const lines = [title, subtitle];
   if (metric) lines.push(`${metric.label}: ${metric.value}`);
-  const cards = sections.map(({ heading, rows, detail }) => {
+  const cards = sections.map(({ heading, rows, detail, emphasis }) => {
     if (heading) lines.push(heading);
     lines.push(...rows.map(([k, v]) => `${k}: ${v}`));
     if (detail) lines.push(detail);
     return box([
       ...(heading ? [text(heading, { size: 'sm', weight: 'bold', color: accent })] : []),
-      ...rows.map(pair),
+      ...rows.map(row => pair(row, emphasis)),
       ...(detail ? [text(detail, { size: 'xs', color: muted, margin: 'sm' })] : []),
-    ], { backgroundColor: '#F7F9FC', paddingAll: '12px', cornerRadius: '10px' });
+    ], { backgroundColor: emphasis ? accent : '#F7F9FC', paddingAll: '12px', cornerRadius: '10px' });
   });
   if (note) lines.push(note);
   const reply = {
@@ -123,4 +127,43 @@ function shippingReply(report, issuesOnly = false, notificationTime = null) {
   });
 }
 
-module.exports = { orderReply, stockReply, overviewReply, salesReply, shippingReply, card };
+function dailyShippedReply(report, companyName, notificationTime) {
+  const date = dateLabel(report.date);
+  const rows = [
+    ['Shopee', fmt(report.shopee)],
+    ['Lazada', fmt(report.lazada)],
+    ['TikTok', fmt(report.tiktok)],
+    ['Express (B2C)', fmt(report.express)],
+    ['B2B', fmt(report.b2b)],
+    ...(report.other ? [['อื่น ๆ', fmt(report.other)]] : []),
+    ...(report.unknownType ? [['ยังไม่ระบุประเภท', fmt(report.unknownType)]] : []),
+  ];
+  const detail = report.b2bExpress ? `ยอด B2B รวม Express ${fmt(report.b2bExpress)} ออเดอร์` : undefined;
+  const sections = [{ rows, detail }, { rows: [['Total', fmt(report.total)]], emphasis: true }];
+  return card(`🚚 สรุปงานที่จัดส่ง ${date}`, companyName, sections,
+    `นับออเดอร์ที่สแกนส่งออกครบทุกกล่องถึง ${notificationTime} น. (เวลาไทย)`,
+    `${companyName} · ${fmt(report.total)} ออเดอร์`);
+}
+
+function shippingFollowUpReply(groups, date, notificationTime, url) {
+  const title = '📋 ออเดอร์ที่ยังไม่ได้จัดส่ง';
+  const subtitle = `กำหนดส่ง ${dateLabel(date)} · รอบ ${notificationTime} น. (เวลาไทย)`;
+  const groupsByType = shippingOrderSections(groups);
+  const total = groupsByType.reduce((sum, group) => sum + group.count, 0);
+  const sections = groupsByType.map(({ label, stages }) => ({
+    heading: label,
+    rows: stages.filter(stage => stage.key !== 'unknown' || stage.orders.length)
+      .map(({ name, orders }) => [name, fmt(orders.length), orders.length > 0]),
+  }));
+  const summary = card(title, subtitle, sections, 'สถานะล่าสุดที่ ShipX รายงานในรอบนี้',
+    `${dateLabel(date)} · ${fmt(total)} ออเดอร์`, { label: 'ยังไม่ได้จัดส่ง', value: `${fmt(total)} ออเดอร์`, warning: total > 0 });
+  if (url && total) {
+    summary.message.contents.body.contents.push({
+      type: 'button', style: 'primary', color: accent, height: 'sm',
+      action: { type: 'uri', label: 'ดูรายการออเดอร์', uri: url },
+    });
+  }
+  return summary;
+}
+
+module.exports = { orderReply, stockReply, overviewReply, salesReply, shippingReply, dailyShippedReply, shippingFollowUpReply, card };

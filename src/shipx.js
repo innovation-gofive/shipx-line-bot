@@ -7,6 +7,10 @@ const STOCK_ENDPOINT = '/api/v1/stock-analytics';
 const DAILY_ENDPOINT = '/api/v2/Report/daily';
 const SALES_ENDPOINT = '/api/v2/Report/order/summary';
 const SHIPPING_ENDPOINT = '/api/v3/Order/list/order-platform';
+const SHIPPING_HISTORY_ENDPOINT = '/api/v2/Order/summaryPlatform/history';
+const SHIPPED_STATUSES = [2005, 4001, 4002];
+const UNPACKED_STATUSES = [1001, 1003, 2001, 2002, 3003, 3004];
+const CLOSED_SHIPPING_STATUSES = [3001, 5001, 5002, ...SHIPPED_STATUSES];
 const DEMO_ORDERS = [
   { companyId: 101, orderId: 1001, orderDocumentNo: 'SO001', movementCode: 'MV001', platformOrderId: '250001', status: 2002, trackingNumber: 'TH0123456789', shippingCarrier: 'ตัวอย่างขนส่ง' },
   { companyId: 101, orderId: 1002, orderDocumentNo: 'SO002', movementCode: 'MV002', status: 5002, trackingNumber: 'TH0987654321', shippingCarrier: 'ตัวอย่างขนส่ง' },
@@ -47,6 +51,23 @@ function echoedDay(value) {
   const ts = Date.parse(zoned || value.length === 10 ? value : value + 'Z');
   if (!Number.isFinite(ts)) return null;
   return zoned ? bangkokDay.format(ts) : value.slice(0, 10);
+}
+function scanTimestamp(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return NaN;
+  return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : value + '+07:00');
+}
+function shippingChannel(value) {
+  const key = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s_-]+/g, '') : '';
+  if (key === 'shopee' || key === 'lazada' || key === 'tiktok') return key;
+  return key === 'tiktokshop' ? 'tiktok' : 'other';
+}
+async function mapShippingHistory(items, get) {
+  const results = [];
+  // The API exposes order details by ID. Bound concurrent lookups against ShipX.
+  for (let index = 0; index < items.length; index += 8) {
+    results.push(...await Promise.all(items.slice(index, index + 8).map(get)));
+  }
+  return results;
 }
 function verifyDates(report, from, to) {
   if (echoedDay(report.fromDate) !== from || echoedDay(report.toDate) !== to) throw new Error('ShipX report dates not verified');
@@ -183,28 +204,28 @@ class ShipXClient {
     if (!count(data.totalOrders) || !count(data.totalItems) || !Number.isFinite(data.totalRevenue)) throw new Error('Invalid sales report');
     return { from, to, totalOrders: data.totalOrders, totalItems: data.totalItems, totalRevenue: data.totalRevenue };
   }
-  async shippingProgress(companyId, now = new Date(), offset = 0) {
+  async ordersDueForShipping(companyId, date, cancel) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
     if (!this.config.demo && !this.config.shippingDateIsDueDate) {
       throw Object.assign(new Error('Confirm the meaning of ShippingDate before enabling due-date reports'), { code: 'shipping_date_unconfirmed' });
     }
-    const [date] = reportDates(1, now, offset);
     let orders = [];
     if (this.config.demo) {
       orders = companyId === 101 ? [
         { orderId: 1, orderDocumentNo: 'SO001', status: 2002, shippingPlatform: 'Shopee' },
         { orderId: 2, orderDocumentNo: 'SO003', status: 1003, shippingPlatform: 'Lazada' },
         { orderId: 3, orderDocumentNo: 'SO004', status: 3004, shippingPlatform: 'TikTok Shop' },
-        { orderId: 4, orderDocumentNo: 'SO005', status: 2003 },
-        { orderId: 5, orderDocumentNo: 'SO006', status: 2004 },
+        { orderId: 4, orderDocumentNo: 'SO005', status: 2003, orderType: 1 },
+        { orderId: 5, orderDocumentNo: 'SO006', status: 2004, orderType: 1 },
         { orderId: 6, orderDocumentNo: 'SO007', status: 2005 },
         { orderId: 7, orderDocumentNo: 'SO008', status: 4002 },
         { orderId: 8, orderDocumentNo: 'SO009', status: 3001 },
         { orderId: 9, orderDocumentNo: 'SO010', status: 5002 },
         { orderId: 10, orderDocumentNo: 'SO011', status: 9999 },
-      ] : [];
+      ].map(order => ({ orderType: 0, ...order })) : [];
     } else {
-      const signal = AbortSignal.timeout(14000), ids = new Set();
+      const deadline = AbortSignal.timeout(14000), ids = new Set();
+      const signal = cancel ? AbortSignal.any([deadline, cancel]) : deadline;
       let totalCount;
       // The V3 OpenAPI specifies the request, but omits the list response schema.
       // Accept only the established V2 paginated envelope; other shapes fail closed.
@@ -228,7 +249,7 @@ class ShipXClient {
           ids.add(order.orderId);
           orders.push({
             orderId: order.orderId, orderDocumentNo: safeText(order.orderDocumentNo || order.movementCode || order.orderId),
-            shippingPlatform: safeText(order.shippingPlatform), status: order.status,
+            shippingPlatform: safeText(order.shippingPlatform), status: order.status, orderType: order.orderType,
           });
         }
         if (!data.hasMore) {
@@ -238,7 +259,98 @@ class ShipXClient {
         if (page === 50 || data.data.length === 0) throw new Error('Shipping report exceeds complete scan limit');
       }
     }
-    return shippingSummary(date, orders);
+    return orders;
+  }
+  async shippingProgress(companyId, now = new Date(), offset = 0) {
+    const [date] = reportDates(1, now, offset);
+    return shippingSummary(date, await this.ordersDueForShipping(companyId, date));
+  }
+  async shippingFollowUp(companyId, cutoff, cancel) {
+    const [date] = reportDates(1, cutoff);
+    const orders = await this.ordersDueForShipping(companyId, date, cancel);
+    const groups = { b2c: [], b2b: [], unknown: [] };
+    for (const order of orders) {
+      const { status, orderType } = order;
+      if (CLOSED_SHIPPING_STATUSES.includes(status)) continue;
+      let stage = 'unknown';
+      if (status === 2004) stage = 'pickup';
+      else if (status === 2003 || UNPACKED_STATUSES.includes(status)) stage = 'notReady';
+      const type = orderType === 1 ? 'b2b' : orderType === 0 ? 'b2c' : 'unknown';
+      groups[type].push({ orderNo: order.orderDocumentNo, stage, status: orderStatus(status).label });
+    }
+    return groups;
+  }
+  async dailyShippedOrders(companyId, now = new Date(), cancel) {
+    if (!isCompanyId(companyId)) throw new Error('Company scope required');
+    const [date] = reportDates(1, now);
+    const summary = { date, shopee: 0, lazada: 0, tiktok: 0, express: 0, b2b: 0, b2bExpress: 0, other: 0, unknownType: 0, total: 0 };
+    if (this.config.demo) {
+      return companyId === 101 ? { ...summary, shopee: 120, lazada: 13, tiktok: 215, b2b: 4, b2bExpress: 1, total: 352 } : summary;
+    }
+
+    const deadline = AbortSignal.timeout(90000);
+    const signal = cancel ? AbortSignal.any([cancel, deadline]) : deadline;
+    const get = (endpoint, params) => {
+      signal.throwIfAborted();
+      return this.get(endpoint, params, AbortSignal.any([signal, AbortSignal.timeout(10000)]));
+    };
+    const fromDate = date + 'T00:00:00+07:00';
+    const from = Date.parse(fromDate);
+    const { data } = await get(SHIPPING_HISTORY_ENDPOINT, { companyId, fromDate, toDate: now.toISOString() });
+    if (!data || (data.batches !== null && !Array.isArray(data.batches))) throw new Error('Invalid shipping history');
+    const ids = new Set();
+    const batches = [];
+    for (const batch of data.batches || []) {
+      const batchId = batch?.summaryPlatformBatchId;
+      const timestamp = scanTimestamp(batch?.dateCreated);
+      if (batch?.companyId !== companyId || !isCompanyId(batchId) || ids.has(batchId) ||
+          !Number.isFinite(timestamp) || timestamp < from || bangkokDay.format(timestamp) !== date) {
+        throw new Error('Shipping batch ownership, identity or date not verified');
+      }
+      ids.add(batchId);
+      if (timestamp <= now.getTime()) batches.push(batch);
+    }
+
+    const details = await mapShippingHistory(batches, async batch => {
+      if (Array.isArray(batch.items) && batch.items.length >= (batch.successCount ?? 1)) return batch;
+      const { data: detail } = await get(`${SHIPPING_HISTORY_ENDPOINT}/${batch.summaryPlatformBatchId}`);
+      if (detail?.companyId !== companyId || detail.summaryPlatformBatchId !== batch.summaryPlatformBatchId ||
+          scanTimestamp(detail.dateCreated) !== scanTimestamp(batch.dateCreated) || !Array.isArray(detail.items)) {
+        throw new Error('Shipping batch detail ownership, identity or date not verified');
+      }
+      return detail;
+    });
+
+    const shipped = new Map();
+    for (const batch of details) {
+      if (batch.successCount > batch.items.length) throw new Error('Incomplete shipping batch detail');
+      for (const item of batch.items) {
+        if (!item || typeof item.isCancelled !== 'boolean' || !Number.isSafeInteger(item.previousStatus) || !Number.isSafeInteger(item.newStatus)) {
+          throw new Error('Invalid shipping scan item');
+        }
+        // V3 summaryPlatform flips the order from Packed to ReadyToShip only after all boxes are scanned.
+        if (item.isCancelled || item.previousStatus !== 2003 || item.newStatus !== 2004) continue;
+        if (!isCompanyId(item.orderId)) throw new Error('Shipping scan order identity not verified');
+        const channel = shippingChannel(item.platform || batch.platform);
+        if (!shipped.has(item.orderId) || shipped.get(item.orderId) === 'other') shipped.set(item.orderId, channel);
+        else if (channel !== 'other' && shipped.get(item.orderId) !== channel) throw new Error('Conflicting shipping channels for order');
+      }
+    }
+
+    const channels = await mapShippingHistory([...shipped], async ([id, scanChannel]) => {
+      const { data: order } = await get(`/api/v2/Order/${id}/detail`);
+      if (order?.companyId !== companyId || order.orderId !== id || (order.expressDelivery != null && typeof order.expressDelivery !== 'boolean')) {
+        throw new Error('Shipping order ownership, identity or express flag not verified');
+      }
+      if (order.orderType === 1) return order.expressDelivery ? 'b2bExpress' : 'b2b';
+      if (order.orderType !== 0) return 'unknownType';
+      if (order.expressDelivery) return 'express';
+      return scanChannel === 'other' ? shippingChannel(order.shippingPlatform) : scanChannel;
+    });
+    for (const channel of channels) summary[channel]++;
+    summary.b2b += summary.b2bExpress;
+    summary.total = channels.length;
+    return summary;
   }
 }
 function shippingSummary(date, orders) {
@@ -248,10 +360,10 @@ function shippingSummary(date, orders) {
     if ([5001, 5002].includes(order.status)) { summary.returns++; continue; }
     summary.due++;
     // Warehouse shipping summary in V2 documents these statuses as past packing.
-    if ([2003, 2004, 2005, 4001, 4002].includes(order.status)) {
+    if ([2003, 2004, ...SHIPPED_STATUSES].includes(order.status)) {
       summary.packed++;
       if ([2003, 2004].includes(order.status)) summary.readyToShip++; else summary.shipped++;
-    } else if ([1001, 1003, 2001, 2002, 3003, 3004].includes(order.status)) {
+    } else if (UNPACKED_STATUSES.includes(order.status)) {
       summary.toPack++;
       if ([3003, 3004].includes(order.status)) summary.problemCount++;
       if (summary.problems.length < 5) summary.problems.push({
@@ -263,4 +375,4 @@ function shippingSummary(date, orders) {
   summary.packedPercent = summary.due ? Math.round(summary.packed * 1000 / summary.due) / 10 : null;
   return summary;
 }
-module.exports = { ShipXClient, SEARCH_ENDPOINT, COMPANY_ENDPOINT, VARIANT_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, isCompanyId, exactMatch, reportDates };
+module.exports = { ShipXClient, SEARCH_ENDPOINT, COMPANY_ENDPOINT, VARIANT_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT, isCompanyId, exactMatch, reportDates };

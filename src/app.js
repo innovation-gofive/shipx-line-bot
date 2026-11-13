@@ -8,8 +8,9 @@ const { createClassifier } = require('./intent');
 const { createPresenter } = require('./ai-response');
 const { stockReply } = require('./replies');
 const { createNotifications } = require('./notifications');
-const { DEFAULT_NOTIFICATION_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
-const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT } = require('./shipx');
+const { shippingReportPage, renderShippingReport } = require('./shipping-report');
+const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
+const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
 const deriveKey = promisify(scrypt);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -47,6 +48,17 @@ async function createApp({ config, store, shipx, line }) {
     next();
   });
   app.get('/healthz', (req, res) => { store.db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });
+  app.use('/shipping-orders', (req, res, next) => {
+    res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow, noarchive' });
+    next();
+  });
+  app.get('/shipping-orders', (req, res) => res.type('html').send(shippingReportPage()));
+  app.post('/shipping-orders', limiter(120, 60000), (req, res) => {
+    const token = /^Bearer ([a-f0-9]{64})$/.exec(req.get('authorization') || '')?.[1];
+    const report = token && config.shippingDateIsDueDate && store.shippingReport(token);
+    if (!report) return res.sendStatus(404);
+    res.type('html').send(renderShippingReport(report));
+  });
   app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }), (req, res) => {
     if (config.demo) return res.status(503).json({ error: 'Webhook is disabled in demo mode' });
     if (!Buffer.isBuffer(req.body) || !verifySignature(req.body, req.get('x-line-signature'), config.lineSecret)) return res.sendStatus(401);
@@ -135,6 +147,7 @@ async function createApp({ config, store, shipx, line }) {
     stockEndpoint: STOCK_ENDPOINT, overviewEndpoint: DAILY_ENDPOINT, salesEndpoint: SALES_ENDPOINT,
     shippingEndpoint: SHIPPING_ENDPOINT, shippingDateConfirmed: config.demo || !!config.shippingDateIsDueDate,
     notificationTime: DEFAULT_NOTIFICATION_TIME, notificationTimeZone: NOTIFICATION_TIME_ZONE,
+    shippingHistoryEndpoint: SHIPPING_HISTORY_ENDPOINT, shippingSummaryTime: DEFAULT_SHIPPING_SUMMARY_TIME,
   }));
   app.post('/api/admin/ai/test', limiter(3, 60000), async (req, res) => {
     if (config.demo) throw fail('Demo ไม่เรียก AI จริง ใช้คำสั่งทดสอบ AI ตามคู่มือหรือเปิดในระบบที่ตั้งค่าคีย์แล้ว');
@@ -156,10 +169,12 @@ async function createApp({ config, store, shipx, line }) {
     res.json({ companies });
   });
   app.put('/api/admin/groups/:id', (req, res) => {
-    const b = req.body || {}, keys = ['companyId', 'active', 'orderEnabled', 'stockEnabled', 'reportEnabled', 'alertsEnabled', 'alertsTime', 'name', 'revision'];
+    const b = req.body || {};
+    const optionalFlags = ['stockEnabled', 'reportEnabled', 'alertsEnabled', 'shippingSummaryEnabled'];
+    const keys = ['companyId', 'active', 'orderEnabled', ...optionalFlags, 'alertsTime', 'shippingSummaryTime', 'name', 'revision'];
     if (!GROUP_ID.test(req.params.id) || Object.keys(b).some(k => !keys.includes(k)) ||
       !(b.companyId === null || isCompanyId(b.companyId)) || typeof b.active !== 'boolean' || typeof b.orderEnabled !== 'boolean' ||
-      ['stockEnabled', 'reportEnabled', 'alertsEnabled'].some(key => Object.hasOwn(b, key) && typeof b[key] !== 'boolean') ||
+      optionalFlags.some(key => Object.hasOwn(b, key) && typeof b[key] !== 'boolean') ||
       typeof b.name !== 'string' || b.name.length > 120 || !Number.isSafeInteger(b.revision) || b.revision < 0) throw fail('ข้อมูลการผูกกลุ่มไม่ถูกต้อง');
     res.json({ group: store.mapGroup(req.params.id, b, config.adminUsername) });
   });

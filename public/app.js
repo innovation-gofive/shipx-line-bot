@@ -65,7 +65,7 @@ function tester() {
 }
 function groupsPage() { return `<section class="panel"><div class="panel-title"><div><h2>กลุ่มลูกค้าทั้งหมด <span class="tag">${state.data.groups.length} กลุ่ม</span></h2><p>กลุ่มใหม่จะยังเข้าถึงข้อมูลไม่ได้จนกว่าจะผูกบริษัทและเปิดสิทธิ์</p></div><button id="sync-companies" class="btn green">${icon('refresh',14)} ดึงบริษัทจาก ShipX</button></div><div class="search-row"><input id="group-search" type="search" placeholder="ค้นหาชื่อกลุ่ม บริษัท หรือ Group ID" aria-label="ค้นหากลุ่ม"></div><div id="groups-table">${groupTable(state.data.groups)}</div></section><div class="notice">หาก Bot อยู่ในกลุ่มอยู่แล้ว ให้ส่งข้อความในกลุ่มหนึ่งครั้ง ระบบจะบันทึก Group ID จาก webhook ที่ตรวจลายเซ็นแล้วโดยอัตโนมัติ</div>`; }
 const outcomes = { found: 'พบข้อมูล', configuration_required: 'รอยืนยันการตั้งค่า', sent: 'ส่งแจ้งเตือนแล้ว', retry_pending: 'รอส่งแจ้งเตือนซ้ำ', no_issues: 'ไม่พบออเดอร์ที่ต้องแจ้งเตือน', generated: 'ใช้แผนการ์ดจาก AI', selected: 'เลือกเครื่องมือ API แล้ว', fallback: 'ใช้การ์ดมาตรฐาน', stock_unavailable: 'ยังไม่พบยอดสต๊อก', not_found: 'ไม่พบในบริษัทของกลุ่ม', denied: 'ปฏิเสธการเข้าถึง', enabled: 'เปิดใช้งาน', disabled: 'ปิดใช้งาน', success: 'สำเร็จ', mapping_changed: 'สิทธิ์เปลี่ยนระหว่างสอบถาม', pending_review: 'รอผู้ดูแลตรวจสอบ', failed: 'ประมวลผลไม่สำเร็จ', upstream_error: 'เชื่อมต่อ ShipX ไม่สำเร็จ', expired: 'หมดเวลาตอบ LINE', ambiguous: 'พบหลาย Order', search_limit: 'เกินขอบเขตค้นหา', rate_limited: 'เกินอัตราคำขอ' };
-const actions = { 'mapping.update': 'อัปเดตสิทธิ์กลุ่ม', 'order.lookup': 'สอบถามสถานะ Order', 'stock.lookup': 'สอบถามสต๊อก', 'report.overview': 'ดูภาพรวมออเดอร์', 'report.sales': 'ดูรายงานยอดขาย', 'report.shipping': 'ความคืบหน้าออเดอร์กำหนดส่ง', 'report.shipping_issues': 'ออเดอร์กำหนดส่งที่ต้องติดตาม', 'notification.shipping': 'แจ้งเตือนอัตโนมัติ', 'ai.command': 'AI แปลงคำถามเป็นคำสั่ง', 'ai.response': 'AI จัดการ์ดตอบกลับ', 'ai.test': 'ทดสอบการเชื่อมต่อ AI', 'bot.request': 'คำขอจาก LINE', 'admin.login': 'เข้าสู่ระบบผู้ดูแล', 'companies.sync': 'ดึงรายชื่อบริษัท', 'group.join': 'Bot เข้ากลุ่ม', 'group.leave': 'Bot ออกจากกลุ่ม', 'line.reply': 'ตอบกลับ LINE', 'webhook.process': 'ประมวลผล Webhook' };
+const actions = { 'mapping.update': 'อัปเดตสิทธิ์กลุ่ม', 'order.lookup': 'สอบถามสถานะ Order', 'stock.lookup': 'สอบถามสต๊อก', 'report.overview': 'ดูภาพรวมออเดอร์', 'report.sales': 'ดูรายงานยอดขาย', 'report.shipping': 'ความคืบหน้าออเดอร์กำหนดส่ง', 'report.shipping_issues': 'ออเดอร์กำหนดส่งที่ต้องติดตาม', 'notification.shipping': 'แจ้งเตือนออเดอร์ค้างแพ็ค', 'notification.shipping_summary': 'ส่งสรุปงานที่จัดส่งรายวัน', 'ai.command': 'AI แปลงคำถามเป็นคำสั่ง', 'ai.response': 'AI จัดการ์ดตอบกลับ', 'ai.test': 'ทดสอบการเชื่อมต่อ AI', 'bot.request': 'คำขอจาก LINE', 'admin.login': 'เข้าสู่ระบบผู้ดูแล', 'companies.sync': 'ดึงรายชื่อบริษัท', 'group.join': 'Bot เข้ากลุ่ม', 'group.leave': 'Bot ออกจากกลุ่ม', 'line.reply': 'ตอบกลับ LINE', 'webhook.process': 'ประมวลผล Webhook' };
 function activity(a) {
   const group = state.data.groups.find(g=>g.id===a.group_id);
   return `<div class="activity-line"><span class="activity-icon">${icon(a.action === 'order.lookup' ? 'message' : 'shield',14)}</span><div class="activity-copy"><strong>${esc(actions[a.action] || a.action)} · ${esc(outcomes[a.outcome] || a.outcome)}</strong><p>${esc(group?.name || a.actor || 'System')}${a.reference ? ' / '+esc(a.reference) : ''}</p></div><small>${time(a.at,true)}</small></div>`;
@@ -111,26 +111,39 @@ function bind() {
 function editGroup(id) {
   const group=state.data.groups.find(g=>g.id===id);if(!group)return;
   const savedAlertsTime = group.alerts_time || state.settings?.notificationTime || '16:00';
+  const supportsSummary = Object.hasOwn(group, 'shipping_summary_enabled');
+  const savedSummaryTime = group.shipping_summary_time || state.settings?.shippingSummaryTime;
+  const summaryFields = supportsSummary ? `<label class="check-field">
+      <input type="checkbox" name="shippingSummaryEnabled" ${group.shipping_summary_enabled ? 'checked' : ''}>
+      <span>ส่งสรุปงานที่จัดส่งรายวัน<small>ยอดสแกนส่งออกและเลขออเดอร์ที่ต้องติดตาม แยก B2C และ B2B</small></span>
+    </label><div class="field">
+      <label for="shipping-summary-time">เวลาตัดยอดและส่งสรุป (เวลาไทย)</label>
+      <input id="shipping-summary-time" name="shippingSummaryTime" type="time" step="60" value="${esc(savedSummaryTime)}" required>
+    </div>` : '';
   state.modal=true;const focused=document.activeElement, overlay=document.createElement('div');overlay.className='modal-backdrop';
   overlay.innerHTML=`<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><h2 id="modal-title">ตั้งค่ากลุ่มลูกค้า</h2><button class="btn small" id="close-modal" aria-label="ปิด">${icon('close',16)}</button></div><form id="mapping-form"><div class="modal-body"><div class="field"><label for="group-name">ชื่อกลุ่มสำหรับผู้ดูแล</label><input id="group-name" name="name" maxlength="120" value="${esc(group.name)}" placeholder="ชื่อกลุ่มลูกค้า"></div><small class="muted">LINE Group ID · ตรวจพบจาก Webhook</small><code class="modal-id">${esc(group.id)}</code><div class="field"><label for="company-id">บริษัทใน ShipX</label><select id="company-id" name="companyId"><option value="">ยังไม่ผูกบริษัท</option>${state.data.companies.map(c=>`<option value="${c.id}" ${c.id===group.company_id ? 'selected' : ''}>${esc(c.name)} · ID ${c.id}</option>`).join('')}</select></div>${!state.data.companies.length ? '<div class="error">ยังไม่มีรายชื่อบริษัท กรุณาดึงรายชื่อจาก ShipX ในหน้ากลุ่มลูกค้าก่อน</div>' : ''}<label class="check-field"><input type="checkbox" name="active" ${group.active?'checked':''}><span>เปิดใช้งานกลุ่ม<small>ต้องมี Bot อยู่ในกลุ่ม และยังไม่มีอีกกลุ่มเปิดใช้บริษัทเดียวกัน</small></span></label><label class="check-field"><input type="checkbox" name="orderEnabled" ${group.order_enabled?'checked':''}><span>อนุญาตสอบถามสถานะ Order<small>เห็นเฉพาะข้อมูลของบริษัทที่เลือกไว้ข้างบน</small></span></label><label class="check-field"><input type="checkbox" name="stockEnabled" ${group.stock_enabled?'checked':''}><span>อนุญาตสอบถามสต๊อก<small>จำนวนสินค้าพร้อมขายตาม SKU</small></span></label><label class="check-field"><input type="checkbox" name="reportEnabled" ${group.report_enabled?'checked':''}><span>อนุญาตดูรายงาน<small>ภาพรวมออเดอร์ กำหนดส่ง ความคืบหน้าแพ็ค และยอดขาย</small></span></label><label class="check-field"><input type="checkbox" name="alertsEnabled" ${group.alerts_enabled?'checked':''} ${!group.active||!group.report_enabled?'disabled':''}><span>แจ้งเตือนอัตโนมัติ<small>แจ้งออเดอร์กำหนดส่งวันนี้ที่แพ็คยังไม่เสร็จ แม้ไม่มีคนแท็กบอท</small></span></label>
     <div class="field">
       <label for="alerts-time">เวลาแจ้งเตือน (เวลาไทย)</label>
       <input id="alerts-time" name="alertsTime" type="time" step="60" value="${esc(savedAlertsTime)}" required>
-    </div><div class="notice">${icon('shield',13)} ตรวจสอบว่าเป็นกลุ่มของบริษัทนี้จริงก่อนเปิดสิทธิ์ การเปลี่ยนบริษัทจะมีผลกับคำขอใหม่ทันที</div><div id="mapping-error" role="alert"></div></div><div class="modal-footer"><button type="button" class="btn" id="cancel-modal">ยกเลิก</button><button class="btn primary" type="submit">บันทึกการตั้งค่า</button></div></form></section>`;
+    </div>${summaryFields}<div class="notice">${icon('shield',13)} ตรวจสอบว่าเป็นกลุ่มของบริษัทนี้จริงก่อนเปิดสิทธิ์ การเปลี่ยนบริษัทจะมีผลกับคำขอใหม่ทันที</div><div id="mapping-error" role="alert"></div></div><div class="modal-footer"><button type="button" class="btn" id="cancel-modal">ยกเลิก</button><button class="btn primary" type="submit">บันทึกการตั้งค่า</button></div></form></section>`;
   document.body.append(overlay);document.getElementById('group-name').focus();
   function close(){state.modal=false;overlay.remove();document.removeEventListener('keydown',keys);focused?.focus();}
   function keys(e){if(e.key==='Escape')close();if(e.key==='Tab'){const els=[...overlay.querySelectorAll('button,input,select')].filter(x=>!x.disabled);if(e.shiftKey&&document.activeElement===els[0]){e.preventDefault();els.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===els.at(-1)){e.preventDefault();els[0].focus();}}}
   document.addEventListener('keydown',keys);document.getElementById('close-modal').onclick=close;document.getElementById('cancel-modal').onclick=close;
   const mappingForm=document.getElementById('mapping-form');
-  const { active, reportEnabled, alertsEnabled, alertsTime } = mappingForm.elements;
-  const updateAlerts = () => {
+  const { active, reportEnabled, alertsEnabled, alertsTime, shippingSummaryEnabled, shippingSummaryTime } = mappingForm.elements;
+  const schedules = [[alertsEnabled, alertsTime]];
+  if (supportsSummary) schedules.push([shippingSummaryEnabled, shippingSummaryTime]);
+  const updateSchedules = () => {
     const eligible = active.checked && reportEnabled.checked;
-    alertsEnabled.disabled = !eligible;
-    if (!eligible) alertsEnabled.checked = false;
-    alertsTime.disabled = !alertsEnabled.checked;
+    for (const [enabled, time] of schedules) {
+      enabled.disabled = !eligible;
+      if (!eligible) enabled.checked = false;
+      time.disabled = !enabled.checked;
+    }
   };
-  for (const field of [active, reportEnabled, alertsEnabled]) field.addEventListener('change', updateAlerts);
-  updateAlerts();
+  for (const field of [active, reportEnabled, ...schedules.map(([enabled]) => enabled)]) field.addEventListener('change', updateSchedules);
+  updateSchedules();
   document.getElementById('mapping-form').addEventListener('submit',async e=>{
     e.preventDefault();const form=e.target, button=form.querySelector('[type=submit]');button.disabled=true;
     const body = {
@@ -144,6 +157,10 @@ function editGroup(id) {
       alertsTime: alertsTime.value && alertsTime.value !== savedAlertsTime ? alertsTime.value : undefined,
       revision: group.revision,
     };
+    if (supportsSummary) {
+      body.shippingSummaryEnabled = shippingSummaryEnabled.checked;
+      if (shippingSummaryTime.value && shippingSummaryTime.value !== savedSummaryTime) body.shippingSummaryTime = shippingSummaryTime.value;
+    }
     try {
       await api('/api/admin/groups/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) });
     } catch (error) {

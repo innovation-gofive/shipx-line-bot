@@ -187,3 +187,15 @@ test('LINE push uses a retry key and treats an already accepted retry as success
   });
   await client.push(groupId,message,key);
 });
+
+test('LINE push passes through the ordered Flex and text messages of a follow-up batch', async () => {
+  const card = shippingReply(await new ShipXClient({demo:true}).shippingProgress(101, now), true, '16:00').message;
+  const messages = [card, { type: 'text', text: 'SO001' }], key = randomUUID();
+  const client = new LineClient({ lineToken: 'fake' }, async (url, options) => {
+    assert.equal(url, 'https://api.line.me/v2/bot/message/push');
+    assert.equal(options.headers['X-Line-Retry-Key'], key);
+    assert.deepEqual(JSON.parse(options.body), { to: groupId, messages });
+    return new Response('{}');
+  });
+  await client.push(groupId, messages, key);
+});

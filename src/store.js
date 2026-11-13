@@ -1,7 +1,10 @@
 const { DatabaseSync } = require('node:sqlite');
+const { createHash, randomBytes } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const path = require('node:path');
-const { DEFAULT_NOTIFICATION_TIME, isNotificationTime } = require('./notification-time');
+const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, isNotificationTime } = require('./notification-time');
+const notificationTables = ['notifications', 'shipping_summary_notifications'];
+const reportTokenHash = token => createHash('sha256').update(token).digest('hex');
 class Store {
   constructor(filename) {
     if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true });
@@ -13,6 +16,7 @@ class Store {
         active INTEGER NOT NULL DEFAULT 0, order_enabled INTEGER NOT NULL DEFAULT 0,
         stock_enabled INTEGER NOT NULL DEFAULT 0, report_enabled INTEGER NOT NULL DEFAULT 0, alerts_enabled INTEGER NOT NULL DEFAULT 0,
         alerts_time TEXT NOT NULL DEFAULT '${DEFAULT_NOTIFICATION_TIME}',
+        shipping_summary_enabled INTEGER NOT NULL DEFAULT 0, shipping_summary_time TEXT NOT NULL DEFAULT '${DEFAULT_SHIPPING_SUMMARY_TIME}',
         bot_present INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 0,
         last_seen INTEGER NOT NULL, created_at INTEGER NOT NULL
       );
@@ -27,9 +31,15 @@ class Store {
         group_id TEXT, company_id INTEGER, action TEXT NOT NULL, outcome TEXT NOT NULL,
         reference TEXT, endpoint TEXT
       );
+      CREATE TABLE IF NOT EXISTS shipping_reports (
+        token_hash TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), company_id INTEGER NOT NULL,
+        day TEXT NOT NULL, time TEXT NOT NULL, orders TEXT NOT NULL, expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS shipping_reports_expiry ON shipping_reports(expires_at);
+      CREATE INDEX IF NOT EXISTS shipping_reports_group ON shipping_reports(group_id);
       CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
       CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, created_at);`);
-    this.db.exec(`CREATE TABLE IF NOT EXISTS notifications (
+    for (const table of notificationTables) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (
       group_id TEXT NOT NULL, day TEXT NOT NULL, company_id INTEGER NOT NULL, revision INTEGER NOT NULL,
       retry_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL DEFAULT 'pending', payload TEXT,
       attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
@@ -41,6 +51,8 @@ class Store {
       if (!columns.has('report_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN report_enabled INTEGER NOT NULL DEFAULT 0');
       if (!columns.has('alerts_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN alerts_enabled INTEGER NOT NULL DEFAULT 0');
       if (!columns.has('alerts_time')) this.db.exec(`ALTER TABLE groups ADD COLUMN alerts_time TEXT NOT NULL DEFAULT '${DEFAULT_NOTIFICATION_TIME}'`);
+      if (!columns.has('shipping_summary_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN shipping_summary_enabled INTEGER NOT NULL DEFAULT 0');
+      if (!columns.has('shipping_summary_time')) this.db.exec(`ALTER TABLE groups ADD COLUMN shipping_summary_time TEXT NOT NULL DEFAULT '${DEFAULT_SHIPPING_SUMMARY_TIME}'`);
     });
     // Use a single app replica with SQLite. Recover jobs after an interrupted restart.
     this.db.prepare("UPDATE jobs SET state='pending' WHERE state='processing'").run();
@@ -63,24 +75,38 @@ class Store {
     this.db.prepare(`INSERT INTO groups(id,last_seen,created_at,bot_present) VALUES(?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen,bot_present=excluded.bot_present
       WHERE excluded.last_seen >= groups.last_seen`).run(id, timestamp, Date.now(), leaving ? 0 : 1);
-    if (leaving) this.db.prepare('UPDATE groups SET active=0, revision=revision+1 WHERE id=? AND last_seen<=?').run(id, timestamp);
+    if (leaving && this.db.prepare('UPDATE groups SET active=0, revision=revision+1 WHERE id=? AND last_seen<=?').run(id, timestamp).changes) {
+      this.db.prepare('DELETE FROM shipping_reports WHERE group_id=?').run(id);
+    }
   }
   rename(id, name) { this.db.prepare("UPDATE groups SET name=? WHERE id=? AND name=''").run(name.slice(0, 120), id); }
-  mapGroup(id, { companyId, active, orderEnabled, stockEnabled = false, reportEnabled = false, alertsEnabled = false, alertsTime, name, revision }, actor) {
+  mapGroup(id, {
+    companyId, active, orderEnabled, stockEnabled = false, reportEnabled = false, alertsEnabled = false, alertsTime,
+    shippingSummaryEnabled, shippingSummaryTime, name, revision,
+  }, actor) {
     return this.transaction(() => {
       const current = this.group(id);
       if (!current) throw Object.assign(new Error('ไม่พบกลุ่มนี้'), { status: 404 });
       if (current.revision !== revision) throw Object.assign(new Error('ข้อมูลเปลี่ยนแล้ว กรุณาโหลดใหม่ก่อนบันทึก'), { status: 409 });
       if (active && (!companyId || !current.bot_present)) throw Object.assign(new Error('ต้องเลือกบริษัทและเชิญ Bot เข้ากลุ่มก่อนเปิดใช้งาน'), { status: 400 });
-      if (alertsEnabled && (!active || !reportEnabled)) throw Object.assign(new Error('ต้องเปิดใช้งานกลุ่มและสิทธิ์รายงานก่อนเปิดแจ้งเตือน'), { status: 400 });
-      if (alertsTime !== undefined && !isNotificationTime(alertsTime)) throw Object.assign(new Error('กรุณาเลือกเวลาแจ้งเตือนระหว่าง 00:00 ถึง 23:59'), { status: 400 });
+      const canSendReports = active && reportEnabled;
+      if ((alertsEnabled || shippingSummaryEnabled) && !canSendReports) throw Object.assign(new Error('ต้องเปิดใช้งานกลุ่มและสิทธิ์รายงานก่อนเปิดแจ้งเตือน'), { status: 400 });
+      if ([alertsTime, shippingSummaryTime].some(time => time !== undefined && !isNotificationTime(time))) {
+        throw Object.assign(new Error('กรุณาเลือกเวลาแจ้งเตือนระหว่าง 00:00 ถึง 23:59'), { status: 400 });
+      }
       if (companyId && !this.db.prepare('SELECT id FROM companies WHERE id=?').get(companyId)) throw Object.assign(new Error('กรุณาเลือกบริษัทจากรายการ ShipX'), { status: 400 });
       try {
-        this.db.prepare('UPDATE groups SET company_id=?, active=?, order_enabled=?, stock_enabled=?, report_enabled=?, alerts_enabled=?, alerts_time=?, name=?, revision=revision+1 WHERE id=?')
-          .run(companyId, +active, +orderEnabled, +stockEnabled, +reportEnabled, +alertsEnabled, alertsTime ?? current.alerts_time, name, id);
+        this.db.prepare(`UPDATE groups SET company_id=?, active=?, order_enabled=?, stock_enabled=?, report_enabled=?,
+          alerts_enabled=?, alerts_time=?, shipping_summary_enabled=?, shipping_summary_time=?, name=?, revision=revision+1 WHERE id=?`)
+          .run(companyId, +active, +orderEnabled, +stockEnabled, +reportEnabled, +alertsEnabled, alertsTime ?? current.alerts_time,
+            canSendReports ? +(shippingSummaryEnabled ?? current.shipping_summary_enabled) : 0,
+            shippingSummaryTime ?? current.shipping_summary_time, name, id);
       } catch (e) {
         if (e.message.includes('UNIQUE')) throw Object.assign(new Error('บริษัทนี้มีกลุ่มที่เปิดใช้งานอยู่แล้ว กรุณาปิดกลุ่มเดิมก่อน'), { status: 409 });
         throw e;
+      }
+      if (companyId !== current.company_id || !canSendReports || shippingSummaryEnabled === false) {
+        this.db.prepare('DELETE FROM shipping_reports WHERE group_id=?').run(id);
       }
       this.audit({ actor, groupId: id, companyId, action: 'mapping.update', outcome: active && (orderEnabled || stockEnabled || reportEnabled) ? 'enabled' : 'disabled' });
       return this.group(id);
@@ -112,13 +138,33 @@ class Store {
     });
   }
   finishJob(id, failed = false) { this.db.prepare('UPDATE jobs SET state=?,payload=NULL WHERE id=?').run(failed ? 'failed' : 'done', id); }
+  saveShippingReport(group, day, time, orders, now) {
+    const token = randomBytes(32).toString('hex');
+    this.db.prepare('INSERT INTO shipping_reports(token_hash,group_id,company_id,day,time,orders,expires_at) VALUES(?,?,?,?,?,?,?)')
+      .run(reportTokenHash(token), group.id, group.company_id, day, time, JSON.stringify(orders), now + 86400000);
+    return token;
+  }
+  shippingReport(token, now = Date.now()) {
+    const row = this.db.prepare(`SELECT r.day, r.time, r.orders, COALESCE(c.name, g.name) AS companyName
+      FROM shipping_reports r JOIN groups g ON g.id = r.group_id AND g.company_id = r.company_id
+      LEFT JOIN companies c ON c.id = r.company_id
+      WHERE r.token_hash = ? AND r.expires_at > ? AND g.active = 1 AND g.bot_present = 1
+        AND g.report_enabled = 1 AND g.shipping_summary_enabled = 1`).get(reportTokenHash(token), now);
+    return row && { ...row, orders: JSON.parse(row.orders) };
+  }
   cleanup() {
     const now = Date.now();
     this.db.prepare('DELETE FROM sessions WHERE expires_at<?').run(now);
     this.db.prepare("DELETE FROM jobs WHERE created_at<? AND state IN ('done','failed')").run(now - 7 * 86400000);
     this.db.prepare('DELETE FROM audit WHERE at<?').run(now - 90 * 86400000);
-    this.db.prepare("UPDATE notifications SET payload=NULL,state='expired' WHERE state='pending' AND day < ?").run(new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Bangkok' }).format(now));
-    this.db.prepare('DELETE FROM notifications WHERE day < ?').run(new Date(now - 8 * 86400000).toISOString().slice(0,10));
+    this.db.prepare('DELETE FROM shipping_reports WHERE expires_at<=?').run(now);
+    const localDay = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Bangkok' });
+    const retentionDay = new Date(now - 8 * 86400000).toISOString().slice(0,10);
+    for (const table of notificationTables) {
+      const expiryDay = localDay.format(table === 'shipping_summary_notifications' ? now - 15 * 60000 : now);
+      this.db.prepare(`UPDATE ${table} SET payload=NULL,state='expired' WHERE state='pending' AND day < ?`).run(expiryDay);
+      this.db.prepare(`DELETE FROM ${table} WHERE day < ?`).run(retentionDay);
+    }
   }
   seedDemo() {
     this.saveCompanies([{ id: 101, name: 'ABC Logistics' }, { id: 202, name: 'บริษัท สยามรีเทล จำกัด' }]);
