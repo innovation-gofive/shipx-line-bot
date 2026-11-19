@@ -82,7 +82,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
             }
             if (error) {
               const missing = [shipped.status === 'rejected' && 'ยอดสแกนจัดส่ง', due.status === 'rejected' && 'ข้อมูลออเดอร์ค้างส่ง'].filter(Boolean).join('และ');
-              messages.push({ type: 'text', text: `รอบ ${scheduledTime} น. ยังตรวจสอบ${missing}จาก ShipX ไม่ได้ครับ` });
+              messages.push({ type: 'text', text: `รอบ ${scheduledTime} น. ยังตรวจสอบ${missing}จาก ShipX ไม่ได้ค่ะ` });
             }
             savePayload(messages);
           });

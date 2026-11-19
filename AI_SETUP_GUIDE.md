@@ -60,14 +60,14 @@ AI ไม่ได้รับสิทธิ์เลือกบริษั�
 
 ```dotenv
 OPENAI_API_KEY=ใส่คีย์จริงในช่องนี้
-OPENAI_BASE_URL=
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_RESPONSE_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://llm-gateway.tks.co.th/v1
+OPENAI_MODEL=gemma-4-31B-it-qat-w4a16
+OPENAI_RESPONSE_MODEL=gemma-4-31B-it-qat-w4a16
 AI_RESPONSE_ENABLED=true
 SHIPX_SHIPPING_DATE_IS_DUE_DATE=true
 ```
 
-- `OPENAI_BASE_URL` ใช้ระบุ URL ของ AI Gateway ที่รองรับ OpenAI Responses API เช่น `https://gateway.example.com/v1` แอปเติม `/responses` ให้ เว้นว่างเพื่อใช้ OpenAI โดยตรง
+- `OPENAI_BASE_URL` ใช้ระบุ URL ของ AI Gateway ที่รองรับ OpenAI Responses API เช่น `https://gateway.example.com/v1` แอปเติม `/responses` ให้ ค่าเริ่มต้นของโปรเจกต์คือ Gateway ของบริษัท
 - `OPENAI_MODEL` ใช้ชื่อโมเดลที่ผู้ให้บริการหรือ Gateway เปิดสิทธิ์ให้คีย์นี้ และรองรับการเรียกเครื่องมือ
 - `OPENAI_RESPONSE_MODEL` ใช้ชื่อโมเดลที่รองรับ Structured Outputs สำหรับจัดคำตอบ ถ้าเว้นว่างจะใช้ `OPENAI_MODEL`
 - `AI_RESPONSE_ENABLED=true`: เปิด AI ช่วงจัดคำตอบ ถ้าเป็น `false` ยังให้ AI แปลคำถามได้ แต่ใช้การ์ดมาตรฐานตอบ
@@ -80,7 +80,6 @@ SHIPX_SHIPPING_DATE_IS_DUE_DATE=true
 
 สถานะ “ตั้งค่าแล้ว” หมายถึงมีคีย์และเปิดฟังก์ชัน ไม่ได้ยืนยันว่าคีย์ใช้ได้ จึงต้องกดทดสอบด้วย หากไม่ผ่านให้ตรวจคีย์ สิทธิ์ของโมเดล โควตา และการเชื่อมต่อออกไป OpenAI ในระบบ
 
-ค่าโมเดลข้างบนคงค่าเดิมของโปรเจกต์ไว้ ไม่ใช่การรับรองว่าเป็นโมเดลล่าสุด ณ วันที่เขียนคู่มือ OpenAI ประกาศยุติ GPT-4o mini ในวันที่ 14 มกราคม 2027 จึงควรเลือกโมเดลที่บัญชีใช้ได้และรองรับ Function calling กับ Structured Outputs แล้วทดสอบชุดคำถามก่อนเปลี่ยนค่า ดู [ประกาศ Deprecations](https://developers.openai.com/api/docs/deprecations)
 
 ## 5. ตั้งค่าและลองบนเครื่อง
 
@@ -133,7 +132,7 @@ npm run ai:eval -- --live
 ตัวอย่างประโยคตอบที่เพิ่มได้ใน `responseTemplates.shipping`:
 
 ```json
-"เช็กให้แล้วครับ รอบนี้ต้องส่ง {{due}} ออเดอร์ และแพ็คเสร็จแล้ว {{packed}} ออเดอร์"
+"เช็กให้แล้วค่ะ กำหนดส่งทั้งหมด {{scheduled}} ออเดอร์ ยกเลิก {{cancelled}} เหลือ {{afterCancellation}} ออเดอร์"
 ```
 
 ห้ามพิมพ์ยอดจริง เช่น “แพ็คแล้ว 100” ลงในเทมแพลต ให้ใช้ตัวแปรที่มีอยู่ใน `src/replies.js` เท่านั้น ประโยคสรุปต้องตรงกับความหมายของค่าและรองรับกรณียอดเป็นศูนย์หรือมีสถานะที่ตรวจไม่ได้ด้วย

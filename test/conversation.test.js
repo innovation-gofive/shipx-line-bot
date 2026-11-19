@@ -36,7 +36,8 @@ test('named user memory is isolated by LINE user and company, and cleared on req
 test('persona handles identity, age and permitted capabilities without ShipX or AI calls', async t => {
   const { store, ask } = setup(t);
   const classify = async () => assert.fail('conversation called AI');
-  assert.match((await ask('คุณชื่ออะไร', { classify })).text, /ShipX Bot/);
+  assert.match((await ask('คุณชื่ออะไร', { classify })).text, /Shiny ค่ะ/);
+  assert.doesNotMatch((await ask('สวัสดีครับ', { classify })).text, /ครับ|ผม/);
   assert.match((await ask('อายุเท่าไหร่ครับ', { classify })).text, /ไม่มีอายุแบบคน/);
   const group = store.group(groupId);
   store.mapGroup(groupId, { companyId: 101, active: true, orderEnabled: true, name: 'Order only', revision: group.revision }, 'admin');

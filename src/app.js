@@ -6,6 +6,7 @@ const { verifySignature, addressedCommand } = require('./line');
 const { createWorker, answerCommand, GROUP_ID } = require('./bot');
 const { createClassifier } = require('./intent');
 const { createPresenter } = require('./ai-response');
+const { DEFAULT_MODEL } = require('./ai-config');
 const { stockReply } = require('./replies');
 const { createNotifications } = require('./notifications');
 const { failureReason } = require('./service-error');
@@ -155,7 +156,7 @@ async function createApp({ config, store, shipx, line }) {
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: !!config.shipxApiKey, bearerConfigured: !!config.shipxBearer,
     shipxAuthMode: shipxAuth(config).mode,
     aiConfigured: !!classify, aiResponseConfigured: !!present,
-    aiModel: config.openaiModel || 'gpt-4o-mini', aiResponseModel: config.openaiResponseModel || config.openaiModel || 'gpt-4o-mini',
+    aiModel: config.openaiModel || DEFAULT_MODEL, aiResponseModel: config.openaiResponseModel || config.openaiModel || DEFAULT_MODEL,
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
     stockEndpoint: STOCK_ENDPOINT, overviewEndpoint: DAILY_ENDPOINT, salesEndpoint: SALES_ENDPOINT,
     shippingEndpoint: SHIPPING_ENDPOINT, shippingDateConfirmed: config.demo || !!config.shippingDateIsDueDate,

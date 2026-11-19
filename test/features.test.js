@@ -164,7 +164,7 @@ test('sales report echoes one mapped company and the requested range', async () 
 test('OpenAI receives only redacted vocabulary and cannot supply identifiers, dates, or company scope', async () => {
   const calls=[];
   const classify = createClassifier({openaiApiKey:'fake',openaiModel:'model'}, async (url,options)=>{
-    assert.equal(url,'https://api.openai.com/v1/responses');
+    assert.equal(url,'https://llm-gateway.tks.co.th/v1/responses');
     const req=JSON.parse(options.body); calls.push(req.input);
     assert.equal(req.store,false); assert.equal(req.tool_choice,'required');assert.equal(req.parallel_tool_calls,false);
     assert(req.tools.every(tool=>tool.strict && tool.parameters.additionalProperties===false));

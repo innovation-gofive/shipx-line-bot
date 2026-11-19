@@ -40,7 +40,7 @@ function applyPresentation(reply, type, plan) {
     return { ...section, rows: plan.rowOrder.filter(row => positions.has(row)).map(row => section.rows[positions.get(row)]) };
   });
   let summary = plan.summaryTemplate.replace(/\{\{(\w+)\}\}/g, (_, key) => String(view.variables[key]));
-  if (view.variables.unknown && view.variables.unknown !== '0') summary += ` และยังมี ${view.variables.unknown} ออเดอร์ที่ต้องตรวจสถานะเพิ่มเติมครับ`;
+  if (view.variables.unknown && view.variables.unknown !== '0') summary += ` และยังมี ${view.variables.unknown} ออเดอร์ที่ต้องตรวจสถานะเพิ่มเติมค่ะ`;
   const result = card(plan.title, view.subtitle, sections, view.note, view.altDetail, view.metric, view.footerLabel);
   // Preserve all original factual fields and notes. Only the approved summary is added.
   result.message.contents.body.contents.unshift({ type: 'text', text: summary, size: 'sm', color: '#172338', wrap: true });

@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Store } = require('../src/store');
 const { ShipXClient } = require('../src/shipx');
-const { loadAIConfig, DEFAULT_RESPONSES_URL } = require('../src/ai-config');
+const { loadAIConfig, DEFAULT_RESPONSES_URL, DEFAULT_MODEL } = require('../src/ai-config');
 const { createClassifier } = require('../src/intent');
 const { createPresenter, applyPresentation, presentationSpec } = require('../src/ai-response');
 const { stockReply, shippingReply, orderReply } = require('../src/replies');
@@ -37,8 +37,12 @@ test('classifier and presenter use the configured Responses gateway and bearer k
   assert.deepEqual(calls, ['gateway-tools', 'gateway-json']);
 });
 
-test('AI base URL defaults to OpenAI and rejects unsafe values', () => {
+test('AI defaults match the selected gateway and model and reject unsafe values', () => {
   assert.equal(loadAIConfig({}).openaiResponsesUrl, DEFAULT_RESPONSES_URL);
+  assert.equal(DEFAULT_RESPONSES_URL, 'https://llm-gateway.tks.co.th/v1/responses');
+  assert.equal(DEFAULT_MODEL, 'gemma-4-31B-it-qat-w4a16');
+  assert.equal(loadAIConfig({}).openaiModel, DEFAULT_MODEL);
+  assert.equal(loadAIConfig({}).openaiResponseModel, DEFAULT_MODEL);
   assert.equal(loadAIConfig({ OPENAI_BASE_URL: 'invalid', OPENAI_API_KEY: 'mock-key' }, true).openaiApiKey, '');
   for (const value of ['gateway.example.test', 'http://gateway.example.test/v1', 'https://user:pass@gateway.example.test/v1',
     'https://gateway.example.test/v1?token=unsafe', 'https://gateway.example.test/v1#hash']) {
@@ -66,7 +70,7 @@ test('second AI call generates a validated card plan without receiving identifie
   const reply=orderReply({orderNo:'PRIVATE-ORDER',status:'กำลังแพ็คสินค้า',carrier:'PRIVATE-CARRIER',tracking:'001239999999'});
   const config={openaiApiKey:'fake',openaiModel:'planner-model',openaiResponseModel:'reply-model'};
   const presenter=createPresenter(config,async(url,options)=>{
-    assert.equal(url,'https://api.openai.com/v1/responses');
+    assert.equal(url,DEFAULT_RESPONSES_URL);
     const body=JSON.parse(options.body);
     assert.equal(body.model,'reply-model');assert.equal(body.store,false);
     assert.equal(body.text.format.strict,true);
@@ -76,7 +80,7 @@ test('second AI call generates a validated card plan without receiving identifie
   });
   const result=await presenter(reply,{type:'order'});
   assert.equal(result.outcome,'generated');
-  assert.match(result.reply.text,/เช็กให้แล้วครับ/);
+  assert.match(result.reply.text,/เช็กให้แล้วค่ะ/);
   assert.match(result.reply.text,/กำลังแพ็คสินค้า/);
   for(const field of ['PRIVATE-ORDER','PRIVATE-CARRIER','001239999999']) assert(JSON.stringify(result.reply.message).includes(field));
   assert.doesNotMatch(result.reply.text,/\{\{/);
@@ -138,7 +142,7 @@ test('worker runs AI command -> scoped API -> AI presentation -> LINE, and leave
       sequence.push('shipx');assert.equal(company,101);assert.equal(reference,'SO001');
       return {outcome:'found',order:{orderNo:'SO001',status:'กำลังแพ็คสินค้า'}};
     }},
-    line:{reply:async(token,text,message)=>{sequence.push('line');assert.equal(token,'reply');assert.match(text,/เช็กให้แล้วครับ/);assert.equal(message.type,'flex');assert.equal(message.contents.footer.contents[0].text,'ABC Logistics');}},
+    line:{reply:async(token,text,message)=>{sequence.push('line');assert.equal(token,'reply');assert.match(text,/เช็กให้แล้วค่ะ/);assert.equal(message.type,'flex');assert.equal(message.contents.footer.contents[0].text,'ABC Logistics');}},
   });
   store.enqueue([{webhookEventId:'ai-two-stage',timestamp:Date.now(),type:'message',source:{type:'group',groupId},command:'order SO001',replyToken:'reply'}]);
   await worker.tick();

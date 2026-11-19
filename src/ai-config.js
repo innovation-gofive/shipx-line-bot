@@ -1,8 +1,9 @@
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_BASE_URL = 'https://llm-gateway.tks.co.th/v1';
+const DEFAULT_MODEL = 'gemma-4-31B-it-qat-w4a16';
 const DEFAULT_RESPONSES_URL = `${DEFAULT_BASE_URL}/responses`;
 
 function loadAIConfig(env, demo = false) {
-  const model = env.OPENAI_MODEL || 'gpt-4o-mini';
+  const model = env.OPENAI_MODEL || DEFAULT_MODEL;
   let responsesUrl = DEFAULT_RESPONSES_URL;
   if (!demo && env.OPENAI_BASE_URL?.trim()) {
     const base = URL.parse(env.OPENAI_BASE_URL.trim());
@@ -20,4 +21,4 @@ function loadAIConfig(env, demo = false) {
   };
 }
 
-module.exports = { loadAIConfig, DEFAULT_RESPONSES_URL };
+module.exports = { loadAIConfig, DEFAULT_RESPONSES_URL, DEFAULT_MODEL };

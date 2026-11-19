@@ -4,6 +4,7 @@ const { mkdirSync, writeFileSync } = require('node:fs');
 const { ShipXClient } = require('../src/shipx');
 const { orderReply, stockReply, shippingReply, overviewReply, salesReply, dailyShippedReply, shippingFollowUpReply } = require('../src/replies');
 const { shippingReportPage } = require('../src/shipping-report');
+const { persona } = require('../src/conversation');
 const { applyPresentation, presentationSpec } = require('../src/ai-response');
 const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sizes = { xxs:'10px', xs:'12px', sm:'14px', md:'16px', lg:'19px', xl:'22px', xxl:'30px' };
@@ -54,7 +55,7 @@ async function main() {
   const messages = [...(summaryOnly ? [] : samples.map(sample => sample.message)), shipped.message, followUp.message];
   const cards=messages.map(message=>{
     const content = [message.contents.header, message.contents.body, message.contents.footer].filter(Boolean).map(paint).join('');
-    return '<section><p class="sender">ShipX Bot</p><article>'+content+'</article></section>';
+    return '<section><p class="sender">'+escape(persona.name)+'</p><article>'+content+'</article></section>';
   }).join('');
   const html='<!doctype html><html lang="th"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ShipX LINE Cards Preview</title><style>'
     +'body{margin:0;padding:32px;background:#edf3f9;color:#172338;font-family:Tahoma,Arial,sans-serif;line-height:1.65}main{max-width:1180px;margin:auto}h1{font-size:25px;margin:0}p.lead{color:#667489;margin:6px 0 24px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;align-items:start}.sender{font-size:12px;color:#49627e;margin:0 0 7px 5px}article{background:white;border-radius:16px;overflow:hidden;box-shadow:0 3px 20px #2035520d}section{min-width:0}@media(max-width:800px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:500px){body{padding:18px}.grid{grid-template-columns:1fr}}</style>'

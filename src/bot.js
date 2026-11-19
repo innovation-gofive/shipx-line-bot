@@ -25,7 +25,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
   const plain = text => ({ text, revision: group?.revision });
   if (!active(group)) {
     store.audit({ ...audit, outcome: 'denied' });
-    return plain('กลุ่มนี้ยังไม่ได้เปิดใช้งาน กรุณาติดต่อผู้ดูแลเพื่อผูกบริษัทและเปิดสิทธิ์ครับ');
+    return plain('กลุ่มนี้ยังไม่ได้เปิดใช้งาน กรุณาติดต่อผู้ดูแลเพื่อผูกบริษัทและเปิดสิทธิ์ค่ะ');
   }
   const conversation = conversationReply({ text, group, userId: actor, store });
   if (conversation !== null) {
@@ -57,11 +57,11 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
   };
   const changed = () => {
     store.audit({ ...audit, outcome: 'mapping_changed' });
-    return { text: 'การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้งครับ', revision: store.group(groupId)?.revision };
+    return { text: 'การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้งค่ะ', revision: store.group(groupId)?.revision };
   };
   if (!group[feature.permission]) {
     store.audit({ ...audit, outcome: 'denied' });
-    return plain(`กลุ่มนี้ยังไม่มีสิทธิ์${feature.label} กรุณาติดต่อผู้ดูแลครับ`);
+    return plain(`กลุ่มนี้ยังไม่มีสิทธิ์${feature.label} กรุณาติดต่อผู้ดูแลค่ะ`);
   }
   if (!stillAllowed()) return changed();
   let reply, outcome, configurationRequired = false;
@@ -108,12 +108,12 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
   if (!stillAllowed()) return changed();
   store.audit({ ...audit, outcome });
   if (reply) return { ...reply, revision: group.revision };
-  if (configurationRequired) return plain('รายงานกำหนดส่งยังไม่เปิดใช้งานครับ กรุณาให้ผู้ดูแลยืนยันฟิลด์วันที่กำหนดส่งของ ShipX ก่อน');
-  if (outcome === 'not_found') return plain(command.type === 'stock' ? 'ไม่พบ SKU หรือบาร์โค้ดนี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบรหัสสินค้าอีกครั้งครับ' : NOT_FOUND);
-  if (outcome === 'stock_unavailable') return plain('พบ SKU นี้แล้ว แต่ยังตรวจสอบยอดสต๊อกไม่ได้ครับ');
+  if (configurationRequired) return plain('รายงานกำหนดส่งยังไม่เปิดใช้งานค่ะ กรุณาให้ผู้ดูแลยืนยันฟิลด์วันที่กำหนดส่งของ ShipX ก่อน');
+  if (outcome === 'not_found') return plain(command.type === 'stock' ? 'ไม่พบ SKU หรือบาร์โค้ดนี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบรหัสสินค้าอีกครั้งค่ะ' : NOT_FOUND);
+  if (outcome === 'stock_unavailable') return plain('พบ SKU นี้แล้ว แต่ยังตรวจสอบยอดสต๊อกไม่ได้ค่ะ');
   if (outcome === 'ambiguous' || outcome === 'search_limit') return plain(command.type === 'stock' ?
-    'ยังระบุ SKU เดียวไม่ได้ กรุณาตรวจสอบรหัสสินค้าอีกครั้งครับ' : 'ยังระบุออเดอร์เดียวไม่ได้ กรุณาใช้เลขเอกสาร Order ที่ครบถ้วนครับ');
-  return plain('ตอนนี้ยังตรวจสอบข้อมูลจาก ShipX ไม่ได้ กรุณาลองใหม่ภายหลังครับ');
+    'ยังระบุ SKU เดียวไม่ได้ กรุณาตรวจสอบรหัสสินค้าอีกครั้งค่ะ' : 'ยังระบุออเดอร์เดียวไม่ได้ กรุณาใช้เลขเอกสาร Order ที่ครบถ้วนค่ะ');
+  return plain('ตอนนี้ยังตรวจสอบข้อมูลจาก ShipX ไม่ได้ กรุณาลองใหม่ภายหลังค่ะ');
 }
 function createWorker({ config, store, shipx, line, classify = createClassifier(config), present = createPresenter(config) }) {
   let running = false, stopping = false, timer, current;

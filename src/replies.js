@@ -60,16 +60,16 @@ function orderReply(order, companyName) {
 function stockReply(stock) {
   const rows = [['SKU', stock.sku]];
   if (stock.name) rows.push(['สินค้า', stock.name]);
-  return withVariables(card('📦 ข้อมูลสต๊อกสินค้า', 'เช็กจำนวนพร้อมขายให้แล้วครับ', [{ rows }],
-    stock.ready > 0 ? 'ยอดพร้อมขาย ณ เวลาที่สอบถามครับ' : 'ขณะนี้ยังไม่มีสินค้าพร้อมขายครับ',
+  return withVariables(card('📦 ข้อมูลสต๊อกสินค้า', 'เช็กจำนวนพร้อมขายให้แล้วค่ะ', [{ rows }],
+    stock.ready > 0 ? 'ยอดพร้อมขาย ณ เวลาที่สอบถามค่ะ' : 'ขณะนี้ยังไม่มีสินค้าพร้อมขายค่ะ',
     `${stock.sku} · พร้อมขาย ${fmt(stock.ready)}`, { label: 'จำนวนพร้อมขาย', value: fmt(stock.ready), warning: stock.ready <= 0 }), { ready: fmt(stock.ready) });
 }
 
 function overviewReply(days, offset = 0) {
   const hasPending = days.some(d => d.unpacked || d.awaitingShipment || d.attention);
   const hasUnknown = days.some(d => d.unknown);
-  const subtitle = hasPending ? 'ยังมีออเดอร์ที่ต้องดำเนินการครับ' :
-    hasUnknown ? 'มีบางออเดอร์ที่ยังแยกสถานะไม่ได้ครับ' : 'ไม่พบออเดอร์ค้างในสถานะที่ตรวจได้ครับ';
+  const subtitle = hasPending ? 'ยังมีออเดอร์ที่ต้องดำเนินการค่ะ' :
+    hasUnknown ? 'มีบางออเดอร์ที่ยังแยกสถานะไม่ได้ค่ะ' : 'ไม่พบออเดอร์ค้างในสถานะที่ตรวจได้ค่ะ';
   const sections = days.map((day, i) => ({
     heading: `${['วันนี้', 'เมื่อวาน', 'สองวันก่อน'][offset + i]} · ${dateLabel(day.date)}`,
     rows: [
@@ -123,7 +123,7 @@ function shippingReply(report, issuesOnly = false, notificationTime = null) {
     });
   }
   const subtitle = `กำหนดส่ง ${dateLabel(report.date)} · ${notificationTime ? `แจ้งเตือนรอบ ${notificationTime} น.` : 'เวลาไทย'}`;
-  const note = issuesOnly ? 'กรุณาตรวจสอบออเดอร์ที่ยังแพ็คไม่เสร็จก่อนส่งครับ' :
+  const note = issuesOnly ? 'กรุณาตรวจสอบออเดอร์ที่ยังแพ็คไม่เสร็จก่อนส่งค่ะ' :
     'เปอร์เซ็นต์แพ็คคำนวณจากออเดอร์ตามกำหนดส่งหลังหักยอดยกเลิกและยอดคืนสินค้า';
   return withVariables(card(issuesOnly ? '⚠️ ออเดอร์ที่ต้องติดตาม' : '🚚 ความคืบหน้าการจัดส่ง', subtitle, sections, note,
     `ต้องส่ง ${fmt(report.due)} · แพ็คแล้ว ${fmt(report.packed)} · ยังไม่เสร็จ ${fmt(report.toPack)}`,
