@@ -1,28 +1,33 @@
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/;
 const policy = require('./ai-policy.json');
 const { DEFAULT_RESPONSES_URL } = require('./ai-config');
-const HELP = 'เลือก @ShipX Bot ใน LINE แล้วพิมพ์คำถามได้เลยครับ\n• ออเดอร์ SO001 ให้หน่อย\n• เช็กสต๊อก SKU001\n• วันนี้ต้องส่งกี่ออเดอร์ แพ็คแล้วเท่าไหร่\n• ออเดอร์ที่กำหนดส่งวันนี้แต่ยังแพ็คไม่เสร็จ\n• สรุปออเดอร์ย้อนหลัง 2 วัน\n• รายงานยอดขายวันนี้';
+const { serviceError } = require('./service-error');
+const HELP = 'เลือก @ShipX Bot ใน LINE แล้วพิมพ์คำถามได้เลยครับ';
 const orderWords = /ออเดอร์|ออร์เดอร์|คำสั่งซื้อ|สถานะ|พัสดุ|ติดตาม|order|tracking|status/i;
 const stockWords = /สต(?:๊|็)อก|สต็อค|คงเหลือ|เหลือ\s*(?:เท่าไหร่|เท่าไร|กี่)|พร้อมขาย|\bstock\b|\bsku\b/i;
 const salesWords = /ยอดขาย|รายได้|\bsales\b/i;
 const summaryWords = /สรุป|รายงาน|ภาพรวม|กี่(?:ออเดอร์|รายการ|งาน)|ค้าง|ยังไม่แพ[็คก]|รอแพ[็คก]|\b(?:overview|report|pending)\b/i;
 const shippingWords = /(?:ต้อง|กำหนด|รอ|เตรียม|ครบกำหนด)\s*(?:จัด)?ส่ง|ส่ง\s*(?:วันนี้|เมื่อวาน)|\b(?:due|shipping|dispatch)\b/i;
+const shippedReportWords = /(?:สรุป|รายงาน).*(?:จัดส่ง(?:รายวัน|วันนี้)|ส่งออก|ส่ง(?:ไป)?แล้ว)|(?:ส่งออก|จัดส่งแล้ว|ส่งไปแล้ว)\s*(?:วันนี้)?\s*(?:กี่|เท่าไหร่|เท่าไร)/;
+const dueReportWords = /(?:ต้อง|กำหนด|รอ|เตรียม|ครบกำหนด)\s*(?:จัด)?ส่ง|แพ[็คก]|หยิบ|ยังไม่|ค้าง/;
 const issueWords = /ปัญหา|ยังไม่|ยังไม่ได้|ไม่เสร็จ|ค้าง|เตือน|\b(?:issues|problem|unfinished)\b/i;
 const unsupportedDates = /สัปดาห์|อาทิตย์|เดือน|ปีนี้|ปีก่อน|ตั้งแต่|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}|\b(?:week|month|year)\b/i;
 const blocked = /[\r\n=<>?&\\@]|(?:^|\s)\.{1,2}\/|\bcompany(?:\s*ids?|\b)|บริษัทอื่น|\bignore\b/i;
 const wordPattern = /[A-Za-z0-9][A-Za-z0-9._/-]*/g;
-const english = new Set('order orders status tracking stock sku sales overview report pending today yesterday days day last help check please show for me how many the is of and due shipping dispatch pack packed packing progress issues problem unfinished'.split(' '));
+const english = new Set('order orders status tracking stock sku barcode sales overview report pending today yesterday days day last help check please show for me how many the is of and due shipping dispatch pack packed packing progress issues problem unfinished'.split(' '));
 for (const word of policy.extraEnglishVocabulary || []) if (/^[a-z]+$/.test(word)) english.add(word);
 const segmenter = new Intl.Segmenter('th', { granularity: 'word' });
-const thai = new Set([...segmenter.segment('เช็ก เช็ค ตรวจ ตรวจสอบ ดู ขอ ช่วย หา อยาก รู้ อยากรู้ ให้ หน่อย ครับ ค่ะ คะ ได้ ไหม มั้ย หนอ ออเดอร์ ออร์เดอร์ คำสั่งซื้อ เลข รหัส สถานะ สินค้า พัสดุ ติดตาม ถึง ไหน แล้ว หรือ ยัง จัด ส่ง สต็อก สต๊อก สต็อค ของ เหลือ คงเหลือ พร้อมขาย เท่าไหร่ เท่าไร จำนวน สรุป รายงาน ภาพรวม ยอดขาย รายได้ วันนี้ เมื่อวาน เมื่อวานซืน ย้อนหลัง วัน ล่าสุด กี่ รายการ งาน ค้าง รอ แพ็ค แพ็ก แพค หยิบ ไม่ ยังไม่ได้ บ้าง ขาย คลัง วิธีใช้ ช่วยเหลือ ต้อง กำหนด ครบกำหนด เตรียม เสร็จ สำเร็จ ปัญหา เตือน แจ้งเตือน เปอร์เซ็นต์ คิดเป็น แค่ไหน')].map(x => x.segment).filter(x => /^\p{Script=Thai}+$/u.test(x)));
-for (const token of segmenter.segment(policy.extraThaiVocabulary || '')) if (/^\p{Script=Thai}+$/u.test(token.segment)) thai.add(token.segment);
+const thaiWord = /^\p{Script=Thai}[\p{Script=Thai}\p{M}]*$/u;
+const thai = new Set([...segmenter.segment('เช็ก เช็ค ตรวจ ตรวจสอบ ดู ขอ ช่วย หา อยาก รู้ อยากรู้ ให้ หน่อย ครับ ค่ะ คะ ได้ ไหม มั้ย หนอ ออเดอร์ ออร์เดอร์ คำสั่งซื้อ เลข รหัส สถานะ สินค้า พัสดุ ติดตาม ถึง ไหน แล้ว หรือ ยัง จัด ส่ง จัดส่ง ส่งออก รายวัน บาร์โค้ด บาร์โคด สต็อก สต๊อก สต็อค ของ เหลือ คงเหลือ พร้อมขาย เท่าไหร่ เท่าไร จำนวน สรุป รายงาน ภาพรวม ยอดขาย รายได้ วันนี้ เมื่อวาน เมื่อวานซืน ย้อนหลัง วัน ล่าสุด กี่ รายการ งาน ค้าง รอ แพ็ค แพ็ก แพค หยิบ ไม่ ยังไม่ได้ บ้าง ขาย คลัง วิธีใช้ ช่วยเหลือ ต้อง กำหนด ครบกำหนด เตรียม เสร็จ สำเร็จ ปัญหา เตือน แจ้งเตือน เปอร์เซ็นต์ คิดเป็น แค่ไหน')].map(x => x.segment).filter(x => thaiWord.test(x)));
+for (const token of segmenter.segment(policy.extraThaiVocabulary || '')) if (thaiWord.test(token.segment)) thai.add(token.segment);
 
 function parts(text) {
   const refs = [];
-  const safe = text.replace(wordPattern, (word, offset) => {
+  const normalized = text.replace(/(สต[๊็]อก|สต็อค)(stock|sku)(?=\s|\d|$)/gi, '$1 $2');
+  const safe = normalized.replace(wordPattern, (word, offset) => {
     const key = word.toLowerCase();
     if (english.has(key)) return ` ${key} `;
-    if (/^[23]$/.test(word) && /^\s*(?:วัน|days?\b)/i.test(text.slice(offset + word.length))) return ' ';
+    if (/^[23]$/.test(word) && /^\s*(?:วัน|days?\b)/i.test(normalized.slice(offset + word.length))) return ' ';
     if (!REFERENCE.test(word) || refs.length >= 4) return ' [UNKNOWN] ';
     refs.push(word);
     return ` [REF_${refs.length}] `;
@@ -49,9 +54,10 @@ function route(type, text, refs) {
   if (type === 'order' || type === 'stock') {
     return refs.length === 1 ? { type, reference: refs[0] } : { type: 'help' };
   }
-  if (['shipping', 'shipping_issues'].includes(type)) {
+  if (['shipping', 'shipping_issues', 'daily_shipped'].includes(type)) {
     const period = reportPeriod(text);
     if (!period || refs.length || /ย้อนหลัง|\blast\b|[23]\s*(?:วัน|days?)/i.test(text)) return { type: 'help' };
+    if (type === 'daily_shipped' && period.offset) return { type: 'help' };
     return { type, days: 1, ...(period.offset ? { offset: period.offset } : {}) };
   }
   if (type === 'overview' || type === 'sales') {
@@ -69,11 +75,12 @@ function parseCommand(text) {
   const exact = /^(order|status|สถานะ(?:ออเดอร์)?|เช็ค(?:สถานะ)?|stock|สต๊อก|สต็อก)\s+([A-Za-z0-9][A-Za-z0-9._/-]{0,99})$/i.exec(clean);
   if (exact) return route(stockWords.test(exact[1]) ? 'stock' : 'order', clean, [exact[2]]);
   const { refs } = parts(clean);
-  if (stockWords.test(clean) && !orderWords.test(clean)) return route('stock', clean, refs);
+  if ((stockWords.test(clean) || /บาร์โค้ด|\bbarcode\b/i.test(clean)) && !orderWords.test(clean)) return route('stock', clean, refs);
   if (salesWords.test(clean) && !stockWords.test(clean)) return route('sales', clean, refs);
+  if (!refs.length && shippedReportWords.test(clean) && !dueReportWords.test(clean)) return route('daily_shipped', clean, refs);
   if (!refs.length && shippingWords.test(clean)) return route(issueWords.test(clean) ? 'shipping_issues' : 'shipping', clean, refs);
   if (refs.length === 1 && orderWords.test(clean) && !stockWords.test(clean) && !/สรุป|รายงาน|ภาพรวม|\b(?:report|overview)\b/i.test(clean)) return route('order', clean, refs);
-  if (summaryWords.test(clean) && !stockWords.test(clean)) return route('overview', clean, refs);
+  if ((summaryWords.test(clean) || (!refs.length && /(?:ออเดอร์|ออร์เดอร์|\borders?\b).*(?:วันนี้|\btoday\b)/i.test(clean))) && !stockWords.test(clean)) return route('overview', clean, refs);
   if (orderWords.test(clean) && !stockWords.test(clean)) return route('order', clean, refs);
   return null;
 }
@@ -85,6 +92,7 @@ const toolsByType = {
   sales: ['get_sales_report', 'Read sales totals for the requested period.'],
   shipping: ['get_shipping_progress', 'Read orders scheduled for shipping on a date, calculate how many are due, packed, not yet packed, shipped, and percentage packed.'],
   shipping_issues: ['get_shipping_issues', 'Find scheduled-shipping orders that are not packed or have an issue and need attention before shipping.'],
+  daily_shipped: ['get_daily_shipped', 'Read the completed outbound scans and the shipping summary for today.'],
   help: ['show_help', 'Use for unclear, unsupported, or unrelated questions.'],
 };
 function createClassifier(config, fetcher = fetch) {
@@ -93,10 +101,10 @@ function createClassifier(config, fetcher = fetch) {
     const enabled = new Set([...allowedTypes, 'help']);
     const definitions = Object.entries(toolsByType).filter(([type]) => enabled.has(type));
     const response = await fetcher(config.openaiResponsesUrl || DEFAULT_RESPONSES_URL, {
-      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4500),
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(6500),
       headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: config.openaiModel, store: false, max_output_tokens: 160,
+        model: config.openaiModel, store: false, max_output_tokens: 512,
         instructions: policy.plannerInstructions + '\nDomain facts:\n' + JSON.stringify(policy.domainNotes) + '\nExamples:\n' + JSON.stringify(policy.plannerExamples),
         input: tokens.join(' '),
         tools: definitions.map(([, [name, description]]) => ({
@@ -106,7 +114,7 @@ function createClassifier(config, fetcher = fetch) {
         tool_choice: 'required', parallel_tool_calls: false,
       }),
     });
-    if (!response.ok) return null;
+    if (!response.ok) throw serviceError('AI', '/v1/responses', 'planner_request', response.status);
     const result = await response.json();
     const calls = result.output?.filter(item => item.type === 'function_call');
     if (calls?.length !== 1 || typeof calls[0].arguments !== 'string') return null;
@@ -125,7 +133,8 @@ async function interpret(text, classify, allowedTypes) {
   if (tokens.length < 2 || tokens.every(t => t.startsWith('[')) || refs.length > 1) return fallback || { type: 'help' };
   try {
     const type = await classify(tokens, allowedTypes);
-    if (Object.hasOwn(toolsByType, type) && type !== 'help' && (type !== 'sales' || salesWords.test(text))) {
+    if (fallback && fallback.type !== 'help') return fallback;
+    if (Object.hasOwn(toolsByType, type) && (!allowedTypes || allowedTypes.includes(type)) && type !== 'help' && (type !== 'sales' || salesWords.test(text))) {
       const classified = route(type, text, refs);
       if (classified.type !== 'help') return classified;
     }

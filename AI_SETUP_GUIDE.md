@@ -51,6 +51,8 @@ AI ไม่ได้รับสิทธิ์เลือกบริษั�
 
 ## 4. ตั้งค่าที่ Coolify
 
+บุคลิกบอทอยู่ใน `src/bot-persona.json` แก้ `name`, `introduction`, `ageDescription` และ `replyStyle` แล้ว redeploy ตัวจัดการบทสนทนารับคำทักทาย คำถามอายุ คำถามความสามารถ และการจำชื่อที่ผู้ใช้บอก ความจำชื่ออยู่ในฐานข้อมูลแยกต่อบริษัท กลุ่ม และ LINE User ID ส่วน `replyStyle` ส่งให้ AI ช่วงจัดรูปแบบคำตอบเพิ่มเติมจากกติกาตรวจข้อมูลเดิม
+
 1. เปิด `https://coolify.tks.co.th/`
 2. ไปทีม **Information Technology → ShipX → แอป LINE Bot เดิม**
 3. เปิด **Environment Variables**

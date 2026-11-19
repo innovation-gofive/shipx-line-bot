@@ -1,7 +1,8 @@
 const { randomUUID } = require('node:crypto');
 const { shippingReply, dailyShippedReply, shippingFollowUpReply } = require('./replies');
-const { reportDates } = require('./shipx');
+const { reportDates, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
 const { createPresenter } = require('./ai-response');
+const { failureReason } = require('./service-error');
 const { NOTIFICATION_TIME_ZONE } = require('./notification-time');
 const time = new Intl.DateTimeFormat('en-GB', { timeZone: NOTIFICATION_TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const pendingAlert = { table: 'notifications', action: 'notification.shipping', flag: 'alerts_enabled', time: 'alerts_time' };
@@ -35,12 +36,17 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
     store.db.prepare(`INSERT OR IGNORE INTO ${table}(group_id,day,company_id,revision,retry_key) VALUES(?,?,?,?,?)`)
       .run(group.id, day, group.company_id, group.revision, randomUUID());
     let job = record();
+    if (isSummary && job.company_id === group.company_id && job.revision !== group.revision && job.state === 'pending' && !job.payload) {
+      store.db.prepare(`UPDATE ${table} SET revision=?,attempts=0,next_attempt=0 WHERE group_id=? AND day=?`)
+        .run(group.revision, group.id, day);
+      job = record();
+    }
     if (job.state !== 'pending' || job.next_attempt > now.getTime()) return;
     const matches = () => {
       const latest = store.group(group.id);
       return permitted(latest, kind) && latest.company_id === job.company_id && latest.revision === job.revision;
     };
-    const audit = (outcome, endpoint) => store.audit({ groupId:group.id, companyId:job.company_id, action, outcome, endpoint });
+    const audit = (outcome, endpoint, detail) => store.audit({ groupId:group.id, companyId:job.company_id, action, outcome, endpoint, detail });
     const savePayload = payload => store.db.prepare(`UPDATE ${table} SET payload=? WHERE group_id=? AND day=?`)
       .run(JSON.stringify(payload), group.id, day);
     if (!matches()) { finish('cancelled'); return; }
@@ -49,14 +55,22 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
         .run(now.getTime() + 60000 * (2 ** job.attempts), group.id, day);
       if (!job.payload) {
         if (isSummary) {
-          const [report, followUp] = await Promise.all([
+          const [shipped, due] = await Promise.allSettled([
             shipx.dailyShippedOrders(job.company_id, cutoff, stopSignal.signal),
             config.shippingDateIsDueDate ? shipx.shippingFollowUp(job.company_id, cutoff, stopSignal.signal) : null,
           ]);
-          const summary = dailyShippedReply(report, group.company_name || group.name, scheduledTime);
           if (!matches()) { finish('cancelled'); return; }
+          for (const [part, result, endpoint] of [['shipped', shipped, SHIPPING_HISTORY_ENDPOINT], ['due', due, SHIPPING_ENDPOINT]]) {
+            if (result.status === 'rejected') audit('upstream_error', result.reason?.endpoint || endpoint, `${part}: ${failureReason(result.reason)}`);
+          }
+          const report = shipped.status === 'fulfilled' ? shipped.value : null;
+          const followUp = due.status === 'fulfilled' ? due.value : null;
+          const error = shipped.status === 'rejected' ? shipped.reason : due.status === 'rejected' ? due.reason : null;
+          if (stopping && error) throw error;
+          if (error && job.attempts === 0) throw error;
           store.transaction(() => {
-            const messages = [summary.message];
+            const messages = [];
+            if (report) messages.push(dailyShippedReply(report, group.company_name || group.name, scheduledTime).message);
             if (followUp) {
               let url;
               if (Object.values(followUp).some(orders => orders.length)) {
@@ -65,6 +79,10 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
                 url = link.href;
               }
               messages.push(shippingFollowUpReply(followUp, day, scheduledTime, url).message);
+            }
+            if (error) {
+              const missing = [shipped.status === 'rejected' && 'ยอดสแกนจัดส่ง', due.status === 'rejected' && 'ข้อมูลออเดอร์ค้างส่ง'].filter(Boolean).join('และ');
+              messages.push({ type: 'text', text: `รอบ ${scheduledTime} น. ยังตรวจสอบ${missing}จาก ShipX ไม่ได้ครับ` });
             }
             savePayload(messages);
           });
@@ -91,7 +109,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
       for (let index = payload.next || 0; index < batches.length; index++) {
         if (stopping) return;
         if (!matches()) { finish('cancelled'); return; }
-        if (notificationRun(clock(), scheduledTime, isSummary)?.day !== day) { finish('expired'); return; }
+        if (notificationRun(clock(), scheduledTime, isSummary)?.day !== day) { finish('expired'); audit('expired'); return; }
         const batch = batches[index];
         await line.push(group.id, batch.messages, batch.key);
         if (index + 1 < batches.length) savePayload({ batches, next: index + 1 });
@@ -105,7 +123,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
       }
       const terminal = error.retryable === false || record().attempts >= 3;
       if (terminal) finish('failed');
-      audit(terminal ? 'failed' : 'retry_pending');
+      audit(terminal ? 'failed' : 'retry_pending', error?.endpoint, failureReason(error));
     }
   }
 

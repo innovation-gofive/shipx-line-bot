@@ -194,6 +194,26 @@ test('a group remapped during summary lookup receives no report', async t => {
   assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM shipping_reports').get().count, 0);
 });
 
+test('daily summary retries a broken follow-up API and still sends verified shipped totals', async t => {
+  const { store, map } = setup(t);
+  map(groupId, { shippingSummaryEnabled: true });
+  let now = cutoff;
+  const demo = new ShipXClient({ demo: true }), sent = [];
+  const scheduler = createNotifications({ config, store, clock: () => now, shipx: {
+    dailyShippedOrders: (...args) => demo.dailyShippedOrders(...args),
+    shippingFollowUp: async () => { throw Object.assign(new Error('private upstream body'), { statusCode: 403, endpoint: SHIPPING_ENDPOINT }); },
+  }, line: { push: async (_group, messages) => sent.push(messages) } });
+  await scheduler.tick();
+  assert.equal(sent.length, 0);
+  now = new Date(now.getTime() + 61000);
+  await scheduler.tick();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0].type, 'flex');
+  assert.match(sent[0][1].text, /ยังตรวจสอบข้อมูลออเดอร์ค้างส่ง/);
+  assert(store.audits().some(row => row.endpoint === SHIPPING_ENDPOINT && row.detail === 'due: HTTP 403'));
+  assert.doesNotMatch(JSON.stringify(store.audits()), /private upstream body/);
+});
+
 test('LINE retry uses the same link and the linked page contains the full group snapshot', async t => {
   const { store, map } = setup(t);
   map(groupId, { shippingSummaryEnabled: true });

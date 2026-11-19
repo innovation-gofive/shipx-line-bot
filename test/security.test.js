@@ -28,7 +28,7 @@ test('signed webhook validation uses exact raw bytes', () => {
 });
 test('V2 search scopes every page, verifies ownership and returns an allowlist', async () => {
   const urls=[];
-  const client=new ShipXClient(config(), async (url,opts)=>{
+  const client=new ShipXClient(config({shipxAuthMode:'both'}), async (url,opts)=>{
     urls.push(url); assert.equal(opts.headers['X-API-Key'],'key');assert.equal(opts.headers.Authorization,'Bearer bearer');assert.equal(opts.redirect,'error');
     return urls.length===1 ? reply([{...order,companyId:202,statusDescription:'FOREIGN'}, {...order,companyId:undefined}, {...order,companyId:'101'}],true) : reply([order]);
   });
@@ -82,7 +82,7 @@ test('demo keeps other companies inaccessible and does not contact LINE', async 
 test('worker deduplicates durable events and deletes sensitive payloads', async t => {
   const store=setup(t), sent=[];const worker=createWorker({config:config(),store,shipx:new ShipXClient(config({demo:true})),line:{reply:async(token,text)=>sent.push({token,text})}});
   const event={webhookEventId:'event-1',timestamp:Date.now(),type:'message',source:{type:'group',groupId:G1,userId:'U-test'},command:'order SO001',replyToken:'reply-1'};
-  store.enqueue([event,event]);await worker.tick();store.enqueue([event]);await worker.tick();assert.equal(sent.length,1);assert(sent[0].text.includes('SO001'));assert.equal(store.db.prepare('SELECT payload FROM jobs WHERE id=?').get('event-1').payload,null);
+  store.enqueue([event,event]);await worker.tick();store.enqueue([event]);await worker.tick();assert.equal(sent.length,1);assert(sent[0].text.includes('เลขออเดอร์ 250001'));assert.equal(store.db.prepare('SELECT payload FROM jobs WHERE id=?').get('event-1').payload,null);
 });
 test('worker ignores DMs and ordinary conversation', async t => {
   const store=setup(t), sent=[];const worker=createWorker({config:config(),store,shipx:{findOrder:()=>{throw new Error('should not call')}},line:{reply:async(...args)=>sent.push(args)}});
@@ -106,7 +106,8 @@ test('production configuration refuses demo, weak password and insecure URLs', (
   assert.throws(()=>loadConfig({NODE_ENV:'production'},true),/Demo/);
   assert.throws(()=>loadConfig({ADMIN_PASSWORD:'short'}),/16/);
   const env={NODE_ENV:'production',APP_URL:'https://bot.example.test',ADMIN_PASSWORD:'correct-test-password-long',LINE_CHANNEL_SECRET:'secret',LINE_CHANNEL_ACCESS_TOKEN:'token',SHIPX_BASE_URL:'http://shipx.example.test',SHIPX_API_KEY:'key'};
-  assert.throws(()=>loadConfig(env),/HTTPS/);assert.throws(()=>loadConfig({...env,SHIPX_BASE_URL:'https://shipx.example.test/api'}),/origin/);
+  assert.throws(()=>loadConfig(env),/HTTPS/);assert.throws(()=>loadConfig({...env,SHIPX_BASE_URL:'https://shipx.example.test/wrong'}),/origin/);
+  assert.equal(loadConfig({...env,SHIPX_BASE_URL:'https://shipx.example.test/api'}).shipxBaseUrl,'https://shipx.example.test');
 });
 test('demo database cannot inherit or reuse the live database path', () => {
   const demo=loadConfig({DATABASE_PATH:'./data/live-customer.sqlite'},true);
@@ -121,9 +122,16 @@ test('HTTP auth, CSRF, payload validation, signed ingress and immediate leave', 
   const base=`http://127.0.0.1:${server.address().port}`;
   const request=(path,opts={})=>fetch(base+path,opts);
   assert.equal((await request('/api/admin/dashboard')).status,401);
+  assert.equal((await request('/api/admin/audit.xlsx')).status,401);
   assert.equal((await request('/api/login',{method:'POST',headers:{Origin:'https://evil.test','Content-Type':'application/json'},body:'{}'})).status,403);
   const logged=await request('/api/login',{method:'POST',headers:{Origin:config().origin,'Content-Type':'application/json'},body:JSON.stringify({username:'admin',password:config().adminPassword})});assert.equal(logged.status,200);
   const cookie=logged.headers.get('set-cookie').split(';')[0],session=await logged.json();assert(logged.headers.get('set-cookie').includes('HttpOnly'));
+  const workbook = await request('/api/admin/audit.xlsx', { headers: { Cookie: cookie } });
+  assert.equal(workbook.status, 200);
+  assert.match(workbook.headers.get('content-type'), /spreadsheetml/);
+  assert.match(workbook.headers.get('content-disposition'), /attachment; filename="?shipx-audit-\d{4}-\d{2}-\d{2}\.xlsx"?$/);
+  assert.equal(workbook.headers.get('cache-control'), 'no-store');
+  assert.equal(Buffer.from(await workbook.arrayBuffer()).subarray(0, 4).toString('hex'), '504b0304');
   const headers={Cookie:cookie,Origin:config().origin,'Content-Type':'application/json','X-CSRF-Token':session.csrf};
   const mapping = {
     name:'Test alert schedule', companyId:101, active:true, orderEnabled:true, stockEnabled:true,
@@ -172,11 +180,15 @@ test('HTTP auth, CSRF, payload validation, signed ingress and immediate leave', 
   ]});
   assert.equal((await postSigned(mentionBatch)).status,200);
   await worker.tick();
-  assert.deepEqual(sent.map(r=>r.token),['self']);
+  assert.deepEqual(sent.map(r=>r.token),['late','self']);
+  const received = store.audits().filter(row => row.action === 'bot.received');
+  assert.equal(received.length, 2);
+  assert(received.some(row => row.question === '@ShipX Bot ออเดอร์ SO002 ให้หน่อย'));
+  assert(received.every(row => row.group_id === G1));
   assert.equal(sent[0].message.type,'flex');
   assert.match(sent[0].message.altText,/คืนสินค้าแล้ว/);
   assert.doesNotMatch(JSON.stringify(sent[0].message),/5002/);
-  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n,1);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n,2);
   const event={webhookEventId:'leave-http',timestamp:Date.now()+100,type:'leave',source:{type:'group',groupId:G1}};const body=JSON.stringify({events:[event]});
   assert.equal((await postSigned(body)).status,200);assert.equal(store.group(G1).active,0);const revision=store.group(G1).revision;
   assert.equal((await postSigned(body)).status,200);assert.equal(store.group(G1).revision,revision);

@@ -29,7 +29,12 @@ class Store {
       CREATE TABLE IF NOT EXISTS audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, actor TEXT,
         group_id TEXT, company_id INTEGER, action TEXT NOT NULL, outcome TEXT NOT NULL,
-        reference TEXT, endpoint TEXT
+        reference TEXT, endpoint TEXT, detail TEXT, question TEXT
+      );
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        group_id TEXT NOT NULL REFERENCES groups(id), company_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL, name TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, company_id, user_id)
       );
       CREATE TABLE IF NOT EXISTS shipping_reports (
         token_hash TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), company_id INTEGER NOT NULL,
@@ -46,6 +51,9 @@ class Store {
       PRIMARY KEY (group_id, day)
     )`);
     this.transaction(() => {
+      const auditColumns = this.db.prepare('PRAGMA table_info(audit)').all();
+      if (!auditColumns.some(column => column.name === 'detail')) this.db.exec('ALTER TABLE audit ADD COLUMN detail TEXT');
+      if (!auditColumns.some(column => column.name === 'question')) this.db.exec('ALTER TABLE audit ADD COLUMN question TEXT');
       const columns = new Set(this.db.prepare('PRAGMA table_info(groups)').all().map(c => c.name));
       if (!columns.has('stock_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN stock_enabled INTEGER NOT NULL DEFAULT 0');
       if (!columns.has('report_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN report_enabled INTEGER NOT NULL DEFAULT 0');
@@ -77,6 +85,7 @@ class Store {
       WHERE excluded.last_seen >= groups.last_seen`).run(id, timestamp, Date.now(), leaving ? 0 : 1);
     if (leaving && this.db.prepare('UPDATE groups SET active=0, revision=revision+1 WHERE id=? AND last_seen<=?').run(id, timestamp).changes) {
       this.db.prepare('DELETE FROM shipping_reports WHERE group_id=?').run(id);
+      this.db.prepare('DELETE FROM user_profiles WHERE group_id=?').run(id);
     }
   }
   rename(id, name) { this.db.prepare("UPDATE groups SET name=? WHERE id=? AND name=''").run(name.slice(0, 120), id); }
@@ -108,21 +117,38 @@ class Store {
       if (companyId !== current.company_id || !canSendReports || shippingSummaryEnabled === false) {
         this.db.prepare('DELETE FROM shipping_reports WHERE group_id=?').run(id);
       }
+      if (companyId !== current.company_id || !active) this.db.prepare('DELETE FROM user_profiles WHERE group_id=?').run(id);
       this.audit({ actor, groupId: id, companyId, action: 'mapping.update', outcome: active && (orderEnabled || stockEnabled || reportEnabled) ? 'enabled' : 'disabled' });
       return this.group(id);
     });
   }
-  audit({ actor = null, groupId = null, companyId = null, action, outcome, reference = null, endpoint = null }) {
-    this.db.prepare('INSERT INTO audit(at,actor,group_id,company_id,action,outcome,reference,endpoint) VALUES(?,?,?,?,?,?,?,?)')
-      .run(Date.now(), actor, groupId, companyId, action, outcome, reference, endpoint);
+  audit({ actor = null, groupId = null, companyId = null, action, outcome, reference = null, endpoint = null, detail = null, question = null }) {
+    this.db.prepare('INSERT INTO audit(at,actor,group_id,company_id,action,outcome,reference,endpoint,detail,question) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(Date.now(), actor, groupId, companyId, action, outcome, reference, endpoint, detail, question);
+  }
+  rememberName(group, userId, name) {
+    this.db.prepare(`INSERT INTO user_profiles(group_id,company_id,user_id,name,updated_at) VALUES(?,?,?,?,?)
+      ON CONFLICT(group_id,company_id,user_id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at`)
+      .run(group.id, group.company_id, userId, name, Date.now());
+  }
+  rememberedName(group, userId) {
+    return this.db.prepare('SELECT name FROM user_profiles WHERE group_id=? AND company_id=? AND user_id=? AND updated_at>?')
+      .get(group.id, group.company_id, userId, Date.now() - 90 * 86400000)?.name;
+  }
+  forgetName(group, userId) {
+    this.db.prepare('DELETE FROM user_profiles WHERE group_id=? AND company_id=? AND user_id=?').run(group.id, group.company_id, userId);
   }
   audits() { return this.db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 100').all(); }
+  exportAudits(now = Date.now()) {
+    return this.db.prepare(`SELECT a.*, c.name AS company_name FROM audit a
+      LEFT JOIN companies c ON c.id = a.company_id WHERE a.at >= ? ORDER BY a.id DESC`).iterate(now - 90 * 86400000);
+  }
   stats() {
     return {
       groups: this.db.prepare('SELECT COUNT(*) AS n FROM groups').get().n,
       active: this.db.prepare('SELECT COUNT(*) AS n FROM groups WHERE active=1 AND (order_enabled=1 OR stock_enabled=1 OR report_enabled=1) AND bot_present=1').get().n,
       pending: this.db.prepare('SELECT COUNT(*) AS n FROM groups WHERE company_id IS NULL').get().n,
-      queries: this.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('order.lookup','stock.lookup','report.overview','report.sales','report.shipping','report.shipping_issues') AND at>?").get(Date.now() - 86400000).n,
+      queries: this.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('order.lookup','stock.lookup','report.overview','report.sales','report.shipping','report.shipping_issues','report.daily_shipped') AND at>?").get(Date.now() - 86400000).n,
       queue: this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('pending','processing')").get().n,
     };
   }
@@ -157,6 +183,7 @@ class Store {
     this.db.prepare('DELETE FROM sessions WHERE expires_at<?').run(now);
     this.db.prepare("DELETE FROM jobs WHERE created_at<? AND state IN ('done','failed')").run(now - 7 * 86400000);
     this.db.prepare('DELETE FROM audit WHERE at<?').run(now - 90 * 86400000);
+    this.db.prepare('DELETE FROM user_profiles WHERE updated_at<?').run(now - 90 * 86400000);
     this.db.prepare('DELETE FROM shipping_reports WHERE expires_at<=?').run(now);
     const localDay = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Bangkok' });
     const retentionDay = new Date(now - 8 * 86400000).toISOString().slice(0,10);

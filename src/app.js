@@ -8,6 +8,9 @@ const { createClassifier } = require('./intent');
 const { createPresenter } = require('./ai-response');
 const { stockReply } = require('./replies');
 const { createNotifications } = require('./notifications');
+const { failureReason } = require('./service-error');
+const { auditWorkbook } = require('./audit-export');
+const { shipxAuth } = require('./shipx-auth');
 const { shippingReportPage, renderShippingReport } = require('./shipping-report');
 const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
 const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
@@ -79,6 +82,7 @@ async function createApp({ config, store, shipx, line }) {
         source: { type: 'group', groupId: event.source.groupId, userId: typeof event.source.userId === 'string' ? event.source.userId.slice(0, 80) : null },
         replyToken: command !== null && typeof event.replyToken === 'string' ? event.replyToken.slice(0, 256) : null,
         command,
+        question: command !== null ? event.message.text.slice(0, 450).toWellFormed() : null,
       });
     }
     // Apply lifecycle changes immediately, so a leave event revokes an in-flight lookup.
@@ -88,6 +92,9 @@ async function createApp({ config, store, shipx, line }) {
         store.discover(event.source.groupId, event.timestamp, event.type === 'leave');
         if (event.type !== 'message' || event.replyToken) {
           store.db.prepare('INSERT INTO jobs(id,payload,created_at) VALUES(?,?,?)').run(event.webhookEventId, JSON.stringify(event), Date.now());
+          if (event.replyToken) store.audit({ actor: event.source.userId, groupId: event.source.groupId,
+            companyId: store.group(event.source.groupId)?.company_id ?? null,
+            action: 'bot.received', outcome: 'received', question: event.question });
         }
       }
     });
@@ -137,10 +144,16 @@ async function createApp({ config, store, shipx, line }) {
     res.clearCookie('shipx_session', { ...cookieOptions, maxAge: undefined }).json({ ok: true });
   });
   app.get('/api/admin/dashboard', (req, res) => res.json({ stats: store.stats(), groups: store.groups(), companies: store.companies(), audit: store.audits() }));
+  app.get('/api/admin/audit.xlsx', limiter(5, 60000), async (req, res) => {
+    const data = await auditWorkbook(store.exportAudits());
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: NOTIFICATION_TIME_ZONE }).format(new Date());
+    res.attachment(`shipx-audit-${day}.xlsx`).send(Buffer.from(data));
+  });
   app.get('/api/admin/settings', (req, res) => res.json({
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
     lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && !!(config.shipxApiKey || config.shipxBearer),
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: !!config.shipxApiKey, bearerConfigured: !!config.shipxBearer,
+    shipxAuthMode: shipxAuth(config).mode,
     aiConfigured: !!classify, aiResponseConfigured: !!present,
     aiModel: config.openaiModel || 'gpt-4o-mini', aiResponseModel: config.openaiResponseModel || config.openaiModel || 'gpt-4o-mini',
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
@@ -152,14 +165,17 @@ async function createApp({ config, store, shipx, line }) {
   app.post('/api/admin/ai/test', limiter(3, 60000), async (req, res) => {
     if (config.demo) throw fail('Demo ไม่เรียก AI จริง ใช้คำสั่งทดสอบ AI ตามคู่มือหรือเปิดในระบบที่ตั้งค่าคีย์แล้ว');
     if (!classify) throw fail('กรุณาตั้ง OPENAI_API_KEY ใน Coolify แล้ว redeploy ก่อน');
-    let planner = false, presenter = null;
-    try { planner = await classify(['วันนี้', 'ต้อง', 'ส่ง', 'กี่', 'ออเดอร์', 'แพ็ค', 'แล้ว', 'เท่าไหร่'], ['shipping']) === 'shipping'; } catch {}
+    let planner = false, presenter = null, plannerReason, presenterReason;
+    try { planner = await classify(['วันนี้', 'ต้อง', 'ส่ง', 'กี่', 'ออเดอร์', 'แพ็ค', 'แล้ว', 'เท่าไหร่'], ['shipping']) === 'shipping'; }
+    catch (error) { plannerReason = failureReason(error); }
+    if (!planner && !plannerReason) plannerReason = 'response_not_verified';
     if (present) {
       const result = await present(stockReply({ sku: 'EXAMPLE', name: 'สินค้าตัวอย่าง', ready: 12 }), { type: 'stock' });
       presenter = result.outcome === 'generated';
+      if (!presenter) presenterReason = result.reason || 'response_not_verified';
     }
-    store.audit({ actor: config.adminUsername, action: 'ai.test', outcome: planner && presenter !== false ? 'success' : 'failed' });
-    res.json({ planner, presenter });
+    store.audit({ actor: config.adminUsername, action: 'ai.test', outcome: planner && presenter !== false ? 'success' : 'failed', detail: [plannerReason, presenterReason].filter(Boolean).join(' / ') || null });
+    res.json({ planner, presenter, plannerReason, presenterReason });
   });
   app.post('/api/admin/companies/sync', limiter(5, 60000), async (req, res) => {
     let companies;

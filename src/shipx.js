@@ -1,9 +1,12 @@
 const { orderStatus } = require('./status');
 const { REFERENCE } = require('./intent');
+const { serviceError, failureReason } = require('./service-error');
+const { shipxAuth } = require('./shipx-auth');
 const SEARCH_ENDPOINT = '/api/v2/Order/search';
 const COMPANY_ENDPOINT = '/api/v1/Company/GetListCompany';
 const VARIANT_ENDPOINT = '/api/v2/Product/variant';
 const STOCK_ENDPOINT = '/api/v1/stock-analytics';
+const BARCODE_ENDPOINT = '/api/v2/Inventory/search-barcode';
 const DAILY_ENDPOINT = '/api/v2/Report/daily';
 const SALES_ENDPOINT = '/api/v2/Report/order/summary';
 const SHIPPING_ENDPOINT = '/api/v3/Order/list/order-platform';
@@ -23,11 +26,14 @@ function exactMatch(order, reference) {
     .some(key => order[key] != null && String(order[key]).toUpperCase() === reference.toUpperCase());
 }
 function safeText(value, max = 150) { return String(value ?? '').replace(/[\r\n\x00-\x1f\x7f]/g, ' ').slice(0, max).toWellFormed(); }
+function orderDisplayNo(order) {
+  return safeText((typeof order.platformOrderId === 'string' && order.platformOrderId.trim()) || order.orderDocumentNo || order.movementCode || order.orderId);
+}
 function publicOrder(order) {
   const documented = orderStatus(order.status);
   const description = typeof order.statusDescription === 'string' ? order.statusDescription.trim() : '';
   return {
-    orderNo: safeText(order.orderDocumentNo || order.movementCode || order.orderId),
+    orderNo: orderDisplayNo(order),
     status: documented.bucket !== 'unknown' ? documented.label :
       (/\p{Script=Thai}/u.test(description) && !/^รหัสสถานะ\s*\d*$/u.test(description) ? safeText(description) : documented.label),
     tracking: safeText(order.trackingNumber), carrier: safeText(order.shippingCarrier || order.shopeeOrderShippingCarrier),
@@ -72,19 +78,25 @@ async function mapShippingHistory(items, get) {
 function verifyDates(report, from, to) {
   if (echoedDay(report.fromDate) !== from || echoedDay(report.toDate) !== to) throw new Error('ShipX report dates not verified');
 }
-function dailySummary(date, total, statuses) {
+function dailySummary(date, total, statuses, cancelledOrders) {
   if (!count(total) || !Array.isArray(statuses)) throw new Error('Invalid daily report');
-  const row = { date, total, unpacked: 0, awaitingShipment: 0, attention: 0, unknown: 0, complete: 0, pendingStatuses: [] };
+  const row = { date, total, cancelled: null, unpacked: 0, awaitingShipment: 0, attention: 0, unknown: 0, complete: 0, pendingStatuses: [] };
   const seen = new Set();
   let sum = 0;
   for (const status of statuses) {
     const code = status?.statusCode, n = status?.count;
     if (!Number.isSafeInteger(code) || !count(n) || seen.has(code) || !count(sum + n) || sum + n > total) throw new Error('Invalid status breakdown');
     seen.add(code); sum += n;
+    if (code === 3001) row.cancelled = n;
     const { label, bucket } = orderStatus(code);
     row[bucket] += n;
     if (n && ['unpacked', 'awaitingShipment', 'attention'].includes(bucket)) row.pendingStatuses.push({ label, count: n });
   }
+  if (cancelledOrders != null && (!count(cancelledOrders) ||
+      (row.cancelled === null ? cancelledOrders > total - sum : row.cancelled !== cancelledOrders))) {
+    throw serviceError('ShipX', DAILY_ENDPOINT, 'cancelled_count_not_verified');
+  }
+  row.cancelled = cancelledOrders ?? row.cancelled ?? (sum === total ? 0 : null);
   row.unknown += total - sum;
   return row;
 }
@@ -95,13 +107,20 @@ class ShipXClient {
     for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, String(value));
     const headers = { Accept: 'application/json' };
     if (body) headers['Content-Type'] = 'application/json';
-    if (this.config.shipxApiKey) headers['X-API-Key'] = this.config.shipxApiKey;
-    if (this.config.shipxBearer) headers.Authorization = `Bearer ${this.config.shipxBearer}`;
-    const response = await this.fetcher(url, { headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined, redirect: 'error', signal: signal || AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error(`ShipX HTTP ${response.status}`);
+    Object.assign(headers, shipxAuth(this.config).headers);
+    let response;
+    try {
+      response = await this.fetcher(url, { headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined, redirect: 'error', signal: signal || AbortSignal.timeout(10000) });
+    } catch (error) {
+      if (error.name === 'AbortError') throw error;
+      throw serviceError('ShipX', endpoint, error.name === 'TimeoutError' ? 'timeout' : 'connection_error');
+    }
+    if (!response.ok) throw serviceError('ShipX', endpoint, 'request_failed', response.status);
     const text = await response.text();
     if (text.length > 5000000) throw new Error('ShipX response too large');
-    const json = JSON.parse(text);
+    let json;
+    try { json = JSON.parse(text); }
+    catch { throw serviceError('ShipX', endpoint, 'response_not_json'); }
     if (!json || typeof json !== 'object') throw new Error('Invalid ShipX response');
     return json;
   }
@@ -142,11 +161,40 @@ class ShipXClient {
       if (companyId !== 101 || !sameReference('SKU001', reference)) return { outcome: 'not_found' };
       return { outcome: 'found', stock: { sku: 'SKU001', name: 'กล่องตัวอย่าง ShipX', ready: 128 } };
     }
-    const signal = AbortSignal.timeout(15000), matches = new Map();
+    const signal = AbortSignal.timeout(15000);
+    let matches = await this.stockVariants(companyId, reference, signal);
+    if (!matches) return { outcome: 'search_limit' };
+    if (!matches.size && /^\d{6,30}$/.test(reference)) {
+      const skus = await this.stockBarcodeSkus(companyId, reference, signal);
+      if (skus.length > 1) return { outcome: 'ambiguous' };
+      if (skus.length) matches = await this.stockVariants(companyId, skus[0], signal);
+    }
+    if (!matches) return { outcome: 'search_limit' };
+    if (matches.size > 1) return { outcome: 'ambiguous' };
+    if (!matches.size) return { outcome: 'not_found' };
+    const [[id, product]] = matches;
+    let stock;
+    for (let page = 1; page <= 5; page++) {
+      const json = await this.get(STOCK_ENDPOINT, { companyIds: companyId, search: product.sku, pageNumber: page, pageSize: 100 }, signal);
+      const data = Array.isArray(json.items) ? json : json.data;
+      if (!Array.isArray(data?.items) || !count(data.pagination?.totalPages) || data.pagination.currentPage !== page) throw serviceError('ShipX', STOCK_ENDPOINT, 'stock_response_not_verified');
+      for (const row of data.items) {
+        if (row?.productVariantId !== id) continue;
+        if (row.productMasterId !== product.masterId || !sameReference(row.sku, product.sku) ||
+            (Object.hasOwn(row, 'companyId') && row.companyId !== companyId) ||
+            !Number.isSafeInteger(row.currentStock) || stock) throw serviceError('ShipX', STOCK_ENDPOINT, 'stock_identity_not_verified');
+        stock = { sku: product.sku, name: product.name, ready: row.currentStock };
+      }
+      if (page >= data.pagination.totalPages) return stock ? { outcome: 'found', stock } : { outcome: 'stock_unavailable' };
+    }
+    return { outcome: 'search_limit' };
+  }
+  async stockVariants(companyId, reference, signal) {
+    const matches = new Map();
     const pageSize = 100;
     for (let page = 1; page <= 5; page++) {
       const { data } = await this.get(VARIANT_ENDPOINT, { companyIds: companyId, searchTerm: reference, includeProductMaster: true, pageNumber: page, pageSize }, signal);
-      if (!Array.isArray(data?.variants) || !count(data.totalPages) || data.pageNumber !== page) throw new Error('Unexpected Product response');
+      if (!Array.isArray(data?.variants) || !count(data.totalPages) || data.pageNumber !== page) throw serviceError('ShipX', VARIANT_ENDPOINT, 'catalog_response_not_verified');
       for (const item of data.variants) {
         const v = item?.variant, m = item?.productMaster;
         if (!sameReference(v?.sku, reference)) continue;
@@ -155,26 +203,29 @@ class ShipXClient {
         if (matches.has(v.productVariantId) && matches.get(v.productVariantId).masterId !== m.productMasterId) throw new Error('Conflicting product identity');
         matches.set(v.productVariantId, { masterId: m.productMasterId, sku: safeText(v.sku), name: safeText(v.variantName || m.name) });
       }
-      if (matches.size > 1) return { outcome: 'ambiguous' };
-      if (page >= data.totalPages) break;
-      if (page === 5) return { outcome: 'search_limit' };
+      if (matches.size > 1 || page >= data.totalPages) return matches;
     }
-    if (!matches.size) return { outcome: 'not_found' };
-    const [[id, product]] = matches;
-    let stock;
-    for (let page = 1; page <= 5; page++) {
-      const data = await this.get(STOCK_ENDPOINT, { companyIds: companyId, search: reference, pageNumber: page, pageSize }, signal);
-      if (!Array.isArray(data.items) || !count(data.pagination?.totalPages) || data.pagination.currentPage !== page) throw new Error('Unexpected Stock response');
-      for (const row of data.items) {
-        if (row?.productVariantId !== id) continue;
-        if (row.productMasterId !== product.masterId || !sameReference(row.sku, reference) ||
-            (Object.hasOwn(row, 'companyId') && row.companyId !== companyId) ||
-            !Number.isSafeInteger(row.currentStock) || stock) throw new Error('Stock identity or counts not verified');
-        stock = { sku: product.sku, name: product.name, ready: row.currentStock };
+    return null;
+  }
+  async stockBarcodeSkus(companyId, barcode, signal) {
+    const skus = new Map();
+    try {
+      for (let pageNumber = 1; pageNumber <= 5; pageNumber++) {
+        const { data } = await this.get(BARCODE_ENDPOINT, { companyId, barcode, pageNumber, pageSize: 100 }, signal);
+        if (data === null) return [...skus.values()];
+        if (!Array.isArray(data) || data.length > 100) throw serviceError('ShipX', BARCODE_ENDPOINT, 'barcode_response_not_verified');
+        for (const row of data) {
+          if (row?.companyId === companyId && sameReference(row.barcodeValue, barcode) && typeof row.sku === 'string' && REFERENCE.test(row.sku)) {
+            skus.set(row.sku.toUpperCase(), row.sku);
+          }
+        }
+        if (skus.size > 1 || data.length < 100) return [...skus.values()];
       }
-      if (page >= data.pagination.totalPages) return stock ? { outcome: 'found', stock } : { outcome: 'stock_unavailable' };
+    } catch (error) {
+      if (error.statusCode === 404 && !skus.size) return [];
+      throw error;
     }
-    return { outcome: 'search_limit' };
+    throw serviceError('ShipX', BARCODE_ENDPOINT, 'barcode_search_limit');
   }
   async orderOverview(companyId, days, now, offset = 0) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
@@ -186,12 +237,24 @@ class ShipXClient {
         return dailySummary(date, rows.reduce((n, r) => n + r.count, 0), rows);
       });
     }
-    const signal = AbortSignal.timeout(12000);
     return Promise.all(dates.map(async date => {
-      const report = await this.get(DAILY_ENDPOINT, { companyIds: companyId, fromDate: date + 'T00:00:00', toDate: date + 'T23:59:59.999' }, signal);
-      verifiedCompany(report, companyId);
-      verifyDates(report, date, date);
-      return dailySummary(date, report.totalOrders, report.statusBreakdown);
+      try {
+        // Use the order list without status filters, so cancellation stays in the gross total.
+        const orders = await this.listOrdersForDate(companyId, date, 'orderDate');
+        const counts = new Map();
+        for (const { status } of orders) counts.set(status, (counts.get(status) || 0) + 1);
+        return dailySummary(date, orders.length, [...counts].map(([statusCode, count]) => ({ statusCode, count })));
+      } catch (listError) {
+        try {
+          const json = await this.get(DAILY_ENDPOINT, { companyIds: companyId, fromDate: date + 'T00:00:00+07:00', toDate: date + 'T23:59:59.999+07:00' }, AbortSignal.timeout(12000));
+          const report = Array.isArray(json.appliedCompanyIds) ? json : json.data;
+          verifiedCompany(report, companyId);
+          verifyDates(report, date, date);
+          return dailySummary(date, report.totalOrders, report.statusBreakdown, report.cancelledOrders);
+        } catch (reportError) {
+          throw serviceError('ShipX', `${SHIPPING_ENDPOINT} + ${DAILY_ENDPOINT}`, `list ${failureReason(listError)} / daily ${failureReason(reportError)}`);
+        }
+      }
     }));
   }
   async salesReport(companyId, days, now, offset = 0) {
@@ -209,9 +272,8 @@ class ShipXClient {
     if (!this.config.demo && !this.config.shippingDateIsDueDate) {
       throw Object.assign(new Error('Confirm the meaning of ShippingDate before enabling due-date reports'), { code: 'shipping_date_unconfirmed' });
     }
-    let orders = [];
     if (this.config.demo) {
-      orders = companyId === 101 ? [
+      return companyId === 101 ? [
         { orderId: 1, orderDocumentNo: 'SO001', status: 2002, shippingPlatform: 'Shopee' },
         { orderId: 2, orderDocumentNo: 'SO003', status: 1003, shippingPlatform: 'Lazada' },
         { orderId: 3, orderDocumentNo: 'SO004', status: 3004, shippingPlatform: 'TikTok Shop' },
@@ -223,43 +285,49 @@ class ShipXClient {
         { orderId: 9, orderDocumentNo: 'SO010', status: 5002 },
         { orderId: 10, orderDocumentNo: 'SO011', status: 9999 },
       ].map(order => ({ orderType: 0, ...order })) : [];
-    } else {
-      const deadline = AbortSignal.timeout(14000), ids = new Set();
-      const signal = cancel ? AbortSignal.any([deadline, cancel]) : deadline;
-      let totalCount;
-      // The V3 OpenAPI specifies the request, but omits the list response schema.
-      // Accept only the established V2 paginated envelope; other shapes fail closed.
-      for (let page = 1; ; page++) {
-        const json = await this.request(SHIPPING_ENDPOINT, {}, signal, {
-          companyIds: [companyId], shippingStartDate: date + 'T00:00:00+07:00', shippingEndDate: date + 'T23:59:59.999+07:00',
-          pageNumber: page, pageSize: 100, sortBy: 'orderId', sortOrder: 'asc',
-        });
-        const data = json.data;
-        if (!Array.isArray(data?.data) || typeof data.hasMore !== 'boolean' || data.data.length > 100 ||
-            (data.pageNumber != null && data.pageNumber !== page)) throw new Error('Unsupported V3 pagination contract');
-        if (Object.hasOwn(data, 'totalCount')) {
-          if (!count(data.totalCount) || (totalCount !== undefined && data.totalCount !== totalCount)) throw new Error('Shipping report changed during pagination');
-          totalCount = data.totalCount;
-        }
-        for (const order of data.data) {
-          if (!order || order.companyId !== companyId || !isCompanyId(order.orderId) ||
-              ids.has(order.orderId) || echoedDay(order.shippingDate) !== date || !Number.isSafeInteger(order.status)) {
-            throw new Error('Shipping order ownership, identity, date or completeness not verified');
-          }
-          ids.add(order.orderId);
-          orders.push({
-            orderId: order.orderId, orderDocumentNo: safeText(order.orderDocumentNo || order.movementCode || order.orderId),
-            shippingPlatform: safeText(order.shippingPlatform), status: order.status, orderType: order.orderType,
-          });
-        }
-        if (!data.hasMore) {
-          if (totalCount !== undefined && totalCount !== orders.length) throw new Error('Incomplete shipping report');
-          break;
-        }
-        if (page === 50 || data.data.length === 0) throw new Error('Shipping report exceeds complete scan limit');
-      }
     }
-    return orders;
+    return this.listOrdersForDate(companyId, date, 'shippingDate', cancel);
+  }
+  async listOrdersForDate(companyId, date, dateField, cancel) {
+    const from = date + 'T00:00:00+07:00', to = date + 'T23:59:59.999+07:00';
+    const range = dateField === 'shippingDate' ? { shippingStartDate: from, shippingEndDate: to } : { startDate: from, endDate: to };
+    const deadline = AbortSignal.timeout(14000), ids = new Set(), orders = [];
+    const signal = cancel ? AbortSignal.any([deadline, cancel]) : deadline;
+    let totalCount;
+    const error = reason => serviceError('ShipX', SHIPPING_ENDPOINT, reason);
+    // The V3 spec omits the response schema. Require pagination metadata and verify each order.
+    for (let page = 1; page <= 50; page++) {
+      const json = await this.request(SHIPPING_ENDPOINT, {}, signal, {
+        companyIds: [companyId], ...range, pageNumber: page, pageSize: 100, sortBy: 'orderId', sortOrder: 'asc',
+      });
+      const data = Array.isArray(json.data?.data) || Array.isArray(json.data?.items) ? json.data : json;
+      const rows = data.data ?? data.items;
+      const metadata = data.pagination ?? data;
+      const currentPage = metadata.currentPage ?? metadata.pageNumber;
+      const hasMore = data.hasMore ?? metadata.hasNext ?? (count(metadata.totalPages) ? page < metadata.totalPages : null);
+      if (!Array.isArray(rows) || typeof hasMore !== 'boolean' || rows.length > 100 || (currentPage != null && currentPage !== page)) {
+        throw error('order_pagination_not_verified');
+      }
+      if (Object.hasOwn(metadata, 'totalCount')) {
+        if (!count(metadata.totalCount) || (totalCount !== undefined && metadata.totalCount !== totalCount)) throw error('order_count_changed_during_pagination');
+        totalCount = metadata.totalCount;
+      }
+      for (const order of rows) {
+        if (order?.companyId !== companyId) throw error('order_company_not_verified');
+        if (!isCompanyId(order.orderId) || ids.has(order.orderId)) throw error('order_identity_not_verified');
+        if (echoedDay(order[dateField]) !== date) throw error('order_date_not_verified');
+        if (!Number.isSafeInteger(order.status)) throw error('order_status_not_verified');
+        ids.add(order.orderId);
+        orders.push({ orderId: order.orderId, orderDocumentNo: orderDisplayNo(order),
+          shippingPlatform: safeText(order.shippingPlatform), status: order.status, orderType: order.orderType });
+      }
+      if (!hasMore) {
+        if (totalCount !== undefined && totalCount !== orders.length) throw error('incomplete_order_list');
+        return orders;
+      }
+      if (!rows.length) break;
+    }
+    throw error('order_complete_scan_limit');
   }
   async shippingProgress(companyId, now = new Date(), offset = 0) {
     const [date] = reportDates(1, now, offset);

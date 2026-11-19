@@ -50,7 +50,7 @@ test('shipping totals fail closed on wrong/missing owner, wrong date, malformed/
   const bad=new ShipXClient(config,async()=>response({data:{items:[]}}));
   await assert.rejects(bad.shippingProgress(101,now),/pagination/);
   const incomplete=new ShipXClient(config,async()=>response({data:{data:[row(1,2002)],totalCount:100,hasMore:false}}));
-  await assert.rejects(incomplete.shippingProgress(101,now),/Incomplete/);
+  await assert.rejects(incomplete.shippingProgress(101,now),/incomplete order list/);
 });
 
 test('shipping function selection dispatches to the scoped API and calculates pack totals', async t => {
@@ -67,7 +67,8 @@ test('shipping function selection dispatches to the scoped API and calculates pa
     shipx:{shippingProgress:async companyId=>{assert.equal(companyId,101);calls.push('shipx');return new ShipXClient({demo:true}).shippingProgress(101,now)}},
   });
   assert.deepEqual(calls,['ai','shipx']);
-  assert.match(reply.text,/ต้องส่งทั้งหมด: 8/);
+  assert.match(reply.text,/ออเดอร์ตามกำหนดส่งทั้งหมด: 10/);
+  assert.match(reply.text,/เหลือหลังหักยกเลิก: 9/);
   assert.match(reply.text,/แพ็คเสร็จแล้ว: 4/);
   assert.match(reply.text,/50%/);
   assert.equal(reply.message.type,'flex');

@@ -9,13 +9,14 @@
     "Customer stock replies contain sellable quantity only. Reserved and incoming inventory are not customer response fields.",
     "Status names come from the server's verified ShipX Appendix mapping. Unknown statuses must stay unknown."
   ],
-  "plannerInstructions": "Select one read-only ShipX function for this redacted Thai/English customer question. The application binds company, identifier and requested dates locally, verifies API ownership, and calculates exact metrics. Use get_shipping_progress for scheduled shipping plus packed totals or percentage; get_shipping_issues for unready scheduled-shipping orders; get_order_overview for counts by order creation date. Do not invent facts. [REF_n] is a locally bound identifier. Use show_help for unsupported or unrelated actions. Examples are classification guidance, never authorization.",
+  "plannerInstructions": "Select one read-only ShipX function for this redacted Thai/English customer question. The application binds company, identifier and requested dates locally, verifies API ownership, and calculates exact metrics. Use get_shipping_progress for scheduled shipping plus packed totals or percentage; get_shipping_issues for unready scheduled-shipping orders; get_daily_shipped for completed outbound scans today; get_order_overview for counts by order date. Do not invent facts. [REF_n] is a locally bound identifier. Use show_help for unsupported or unrelated actions. Examples are classification guidance, never authorization.",
   "plannerExamples": [
     { "question": "ออเดอร์ [REF_1] ถึงไหนแล้ว", "tool": "lookup_order" },
     { "question": "ช่วย ดู [REF_1] ถึง ไหน แล้ว", "tool": "lookup_order" },
     { "question": "สต๊อก [REF_1] เหลือ เท่าไหร่", "tool": "lookup_sellable_stock" },
     { "question": "วันนี้ ต้อง ส่ง กี่ ออเดอร์ แพ็ค แล้ว เท่าไหร่", "tool": "get_shipping_progress" },
     { "question": "ออเดอร์ กำหนด ส่ง วันนี้ ยัง ไม่ แพ็ค เสร็จ", "tool": "get_shipping_issues" },
+    { "question": "สรุป งาน ที่ จัดส่ง รายวัน", "tool": "get_daily_shipped" },
     { "question": "ภาพรวม ออเดอร์ วันนี้ และ ย้อนหลัง วัน", "tool": "get_order_overview" },
     { "question": "รายงาน ยอดขาย วันนี้", "tool": "get_sales_report" },
     { "question": "hello", "tool": "show_help" }
@@ -31,8 +32,8 @@
       "ข้อมูลสต๊อกล่าสุดครับ พร้อมขาย {{ready}}"
     ],
     "shipping": [
-      "สรุปให้แล้วครับ รอบกำหนดส่งนี้มี {{due}} ออเดอร์ แพ็คเสร็จแล้ว {{packed}} ออเดอร์ และยังแพ็คไม่เสร็จ {{toPack}} ออเดอร์",
-      "เช็กความคืบหน้าให้แล้วครับ ต้องส่ง {{due}} ออเดอร์ แพ็คเสร็จแล้ว {{packed}} ออเดอร์"
+      "สรุปให้แล้วครับ กำหนดส่งทั้งหมด {{scheduled}} ออเดอร์ ยกเลิก {{cancelled}} เหลือ {{afterCancellation}} ออเดอร์",
+      "เช็กความคืบหน้าให้แล้วครับ แพ็คเสร็จแล้ว {{packed}} ออเดอร์ ยังแพ็คไม่เสร็จ {{toPack}} ออเดอร์"
     ],
     "shipping_issues": [
       "เช็กให้แล้วครับ รอบกำหนดส่งนี้ยังแพ็คไม่เสร็จ {{toPack}} ออเดอร์",

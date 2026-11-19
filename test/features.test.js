@@ -70,9 +70,26 @@ test('stock stops before quantities when owner is missing or foreign; wrong mast
     assert.deepEqual(await client.findStock(101, 'SKU001'), { outcome:'not_found' });
   }
   const mismatched = new ShipXClient(config, async url => response(url.pathname === VARIANT_ENDPOINT ? products([product]) : stockRows([{ ...stock, productMasterId:999 }])));
-  await assert.rejects(mismatched.findStock(101, 'SKU001'), /not verified/);
+  await assert.rejects(mismatched.findStock(101, 'SKU001'), { reason: 'stock_identity_not_verified' });
   const missing = new ShipXClient(config, async url => response(url.pathname === VARIANT_ENDPOINT ? products([product]) : stockRows([])));
   assert.deepEqual(await missing.findStock(101, 'SKU001'), { outcome:'stock_unavailable' });
+});
+
+test('a scoped barcode resolves to the verified SKU and only returns sellable stock', async () => {
+  const barcode = '8850000000001', calls = [];
+  const client = new ShipXClient(config, async url => {
+    calls.push(url.pathname);
+    if (url.pathname === VARIANT_ENDPOINT) return response(products(url.searchParams.get('searchTerm') === 'SKU001' ? [product] : []));
+    if (url.pathname === '/api/v2/Inventory/search-barcode') {
+      assert.equal(url.searchParams.get('companyId'), '101');
+      assert.equal(url.searchParams.get('barcode'), barcode);
+      return response({ data: [{ companyId: 202, barcodeValue: barcode, sku: 'FOREIGN' }, { companyId: 101, barcodeValue: barcode, sku: 'SKU001' }] });
+    }
+    assert.equal(url.searchParams.get('search'), 'SKU001');
+    return response({ data: stockRows([stock]) });
+  });
+  assert.deepEqual(await client.findStock(101, barcode), { outcome: 'found', stock: { sku: 'SKU001', name: 'สินค้า A', ready: 0 } });
+  assert.deepEqual(calls, [VARIANT_ENDPOINT, '/api/v2/Inventory/search-barcode', VARIANT_ENDPOINT, STOCK_ENDPOINT]);
 });
 
 function daily(url, extra = {}) {
@@ -86,17 +103,43 @@ function daily(url, extra = {}) {
 test('daily overview requests each Bangkok date and separates packing, shipping, exceptions and unknowns', async () => {
   const seen = [];
   const client = new ShipXClient(config, async url => {
+    if (url.pathname !== DAILY_ENDPOINT) return new Response('', { status: 404 });
     assert.equal(url.pathname, DAILY_ENDPOINT); assert.deepEqual(url.searchParams.getAll('companyIds'), ['101']);
     const from = url.searchParams.get('fromDate'), to = url.searchParams.get('toDate');
-    seen.push(from); assert.equal(to, from.slice(0,10) + 'T23:59:59.999');
+    seen.push(from); assert.equal(to, from.slice(0,10) + 'T23:59:59.999+07:00');
     return response(daily(url));
   });
   const results = await client.orderOverview(101, 3, now);
-  assert.deepEqual(seen, ['2026-11-05T00:00:00','2026-11-04T00:00:00','2026-11-03T00:00:00']);
+  assert.deepEqual(seen, ['2026-11-05T00:00:00+07:00','2026-11-04T00:00:00+07:00','2026-11-03T00:00:00+07:00']);
   const { unpacked, awaitingShipment, attention, unknown, complete, pendingStatuses } = results[0];
   assert.deepEqual([unpacked, awaitingShipment, attention, unknown, complete], [5,4,2,3,2]);
   assert(pendingStatuses.some(x=>x.label==='กำลังแพ็คสินค้า' && x.count===3));
   assert(pendingStatuses.every(x=>x.label!=='คืนสินค้าแล้ว'));
+});
+
+test('overview keeps cancelled orders in the gross total and shows the remainder separately', async () => {
+  const client = new ShipXClient(config, async url => response({ data: daily(url, {
+    totalOrders: 127, cancelledOrders: 5, statusBreakdown: [{ statusCode: 2004, count: 122 }, { statusCode: 3001, count: 5 }],
+  }) }));
+  const rows = await client.orderOverview(101, 1, now);
+  const reply = require('../src/replies').overviewReply(rows);
+  assert.match(reply.text, /ออเดอร์ทั้งหมด: 127\nยกเลิก: 5\nเหลือหลังหักยกเลิก: 122/);
+});
+
+test('overview uses a complete company-scoped order list by order date without status filters', async () => {
+  const client = new ShipXClient(config, async (url, options) => {
+    assert.notEqual(url.pathname, DAILY_ENDPOINT);
+    const filter = JSON.parse(options.body);
+    assert.deepEqual(filter.companyIds, [101]);
+    assert.equal(filter.startDate, '2026-11-05T00:00:00+07:00');
+    assert.equal(filter.shippingStartDate, undefined);
+    assert.equal(filter.status, undefined);
+    const data = [{ companyId: 101, orderId: 7, orderDate: '2026-11-04T18:00:00Z', status: 3001 }];
+    return response({ data: { items: data, pagination: { currentPage: 1, totalPages: 1, totalCount: 1 } } });
+  });
+  const [row] = await client.orderOverview(101, 1, now);
+  assert.equal(row.total, 1);
+  assert.equal(row.cancelled, 1);
 });
 
 test('a single unverified day suppresses the entire overview, even when other days pass', async () => {

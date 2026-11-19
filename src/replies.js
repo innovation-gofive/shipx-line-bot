@@ -14,7 +14,7 @@ const pair = ([label, value, highlight], emphasis) => ({
   ] : [text(label, { color: muted, flex: 4 }), text(value, { flex: 6, align: 'end', weight: 'bold', color: highlight ? warning : ink })],
 });
 
-function card(title, subtitle, sections, note, altDetail = subtitle, metric) {
+function card(title, subtitle, sections, note, altDetail = subtitle, metric, footerLabel = 'SHIPX  •  ข้อมูลเฉพาะบริษัทของกลุ่มนี้') {
   const lines = [title, subtitle];
   if (metric) lines.push(`${metric.label}: ${metric.value}`);
   const cards = sections.map(({ heading, rows, detail, emphasis }) => {
@@ -40,20 +40,21 @@ function card(title, subtitle, sections, note, altDetail = subtitle, metric) {
           ...(metric ? [box([text(metric.value, { size: 'xxl', weight: 'bold', color: metric.warning ? warning : accent }), text(metric.label, { size: 'xs', color: muted })])] : []),
           ...cards, ...(note ? [text(note, { size: 'xs', color: muted })] : [])],
           { spacing: 'md', paddingAll: '16px' }),
-        footer: box([text('SHIPX  •  ข้อมูลเฉพาะบริษัทของกลุ่มนี้', { color: accent, size: 'xxs', align: 'center' })], { backgroundColor: '#EAF4FF', paddingAll: '10px' }),
+        footer: box([text(footerLabel, { color: accent, size: 'xxs', align: 'center' })], { backgroundColor: '#EAF4FF', paddingAll: '10px' }),
       },
     },
   };
-  Object.defineProperty(reply, 'view', { value: { title, subtitle, sections, note, altDetail, metric, variables: {} } });
+  Object.defineProperty(reply, 'view', { value: { title, subtitle, sections, note, altDetail, metric, footerLabel, variables: {} } });
   return reply;
 }
 function withVariables(reply, variables) { reply.view.variables = variables; return reply; }
 
-function orderReply(order) {
+function orderReply(order, companyName) {
   const rows = [['สถานะล่าสุด', order.status]];
   if (order.carrier) rows.push(['ขนส่ง', order.carrier]);
   if (order.tracking) rows.push(['เลขพัสดุ', order.tracking]);
-  return withVariables(card('📦 สถานะออเดอร์', `Order  ${order.orderNo}`, [{ rows }], null, `${order.orderNo} · ${order.status}`), { status: order.status });
+  return withVariables(card('📦 สถานะออเดอร์', `เลขออเดอร์ ${order.orderNo}`, [{ rows }], null,
+    `${order.orderNo} · ${order.status}`, undefined, companyName || undefined), { status: order.status });
 }
 
 function stockReply(stock) {
@@ -73,6 +74,8 @@ function overviewReply(days, offset = 0) {
     heading: `${['วันนี้', 'เมื่อวาน', 'สองวันก่อน'][offset + i]} · ${dateLabel(day.date)}`,
     rows: [
       ['ออเดอร์ทั้งหมด', fmt(day.total)],
+      ['ยกเลิก', Number.isInteger(day.cancelled) ? fmt(day.cancelled) : 'ยังตรวจสอบไม่ได้'],
+      ['เหลือหลังหักยกเลิก', Number.isInteger(day.cancelled) ? fmt(day.total - day.cancelled) : 'ยังตรวจสอบไม่ได้'],
       ['ยังแพ็คไม่เสร็จ', fmt(day.unpacked), day.unpacked > 0],
       ['แพ็คแล้ว / รอส่ง', fmt(day.awaitingShipment), day.awaitingShipment > 0],
       ['ต้องติดตาม', fmt(day.attention), day.attention > 0],
@@ -80,7 +83,7 @@ function overviewReply(days, offset = 0) {
     ],
     detail: day.pendingStatuses.map(status => `${status.label} ${fmt(status.count)}`).join(' · '),
   }));
-  return withVariables(card('📋 ภาพรวมออเดอร์', subtitle, sections, 'แยกตามวันที่ของออเดอร์ เวลาไทย โดยใช้สถานะล่าสุดที่ ShipX รายงาน'), {
+  return withVariables(card('📋 ภาพรวมออเดอร์', subtitle, sections, 'ใช้วันที่สั่งซื้อ (OrderDate) ตามเวลาไทย'), {
     total: fmt(days.reduce((sum, day) => sum + day.total, 0)),
     unpacked: fmt(days.reduce((sum, day) => sum + day.unpacked, 0)),
     unknown: fmt(days.reduce((sum, day) => sum + day.unknown, 0)),
@@ -98,7 +101,10 @@ function salesReply(report) {
 
 function shippingReply(report, issuesOnly = false, notificationTime = null) {
   const rows = [
-    ['ต้องส่งทั้งหมด', fmt(report.due)],
+    ['ออเดอร์ตามกำหนดส่งทั้งหมด', fmt(report.scheduled)],
+    ['ยกเลิก', fmt(report.cancelled)],
+    ['เหลือหลังหักยกเลิก', fmt(report.scheduled - report.cancelled)],
+    ['อยู่ระหว่างคืน / คืนแล้ว', fmt(report.returns)],
     ['แพ็คเสร็จแล้ว', fmt(report.packed)],
     ['แพ็คแล้ว / รอส่ง', fmt(report.readyToShip)],
     ['ส่งออกจากคลังแล้ว', fmt(report.shipped)],
@@ -118,12 +124,13 @@ function shippingReply(report, issuesOnly = false, notificationTime = null) {
   }
   const subtitle = `กำหนดส่ง ${dateLabel(report.date)} · ${notificationTime ? `แจ้งเตือนรอบ ${notificationTime} น.` : 'เวลาไทย'}`;
   const note = issuesOnly ? 'กรุณาตรวจสอบออเดอร์ที่ยังแพ็คไม่เสร็จก่อนส่งครับ' :
-    `ไม่รวมยกเลิก ${fmt(report.cancelled)} และคืนสินค้า ${fmt(report.returns)} ออเดอร์ · ถาม “ออเดอร์ที่กำหนดส่งวันนี้แต่ยังแพ็คไม่เสร็จ” เพื่อดูรายการ`;
+    'เปอร์เซ็นต์แพ็คคำนวณจากออเดอร์ตามกำหนดส่งหลังหักยอดยกเลิกและยอดคืนสินค้า';
   return withVariables(card(issuesOnly ? '⚠️ ออเดอร์ที่ต้องติดตาม' : '🚚 ความคืบหน้าการจัดส่ง', subtitle, sections, note,
     `ต้องส่ง ${fmt(report.due)} · แพ็คแล้ว ${fmt(report.packed)} · ยังไม่เสร็จ ${fmt(report.toPack)}`,
     issuesOnly ? { label: 'ออเดอร์ที่ควรติดตามก่อนส่ง', value: `${fmt(report.toPack + report.unknown)} ออเดอร์`, warning: report.toPack + report.unknown > 0 } :
       { label: 'แพ็คเสร็จ / ออเดอร์ที่ต้องส่ง', value: report.packedPercent === null ? 'ไม่มีออเดอร์ต้องส่ง' : `${fmt(report.packedPercent)}%` }), {
-    due: fmt(report.due), packed: fmt(report.packed), toPack: fmt(report.toPack), unknown: fmt(report.unknown),
+    scheduled: fmt(report.scheduled), cancelled: fmt(report.cancelled), afterCancellation: fmt(report.scheduled - report.cancelled),
+    packed: fmt(report.packed), toPack: fmt(report.toPack), unknown: fmt(report.unknown),
   });
 }
 

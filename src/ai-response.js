@@ -1,6 +1,8 @@
 const policy = require('./ai-policy.json');
 const { card } = require('./replies');
 const { DEFAULT_RESPONSES_URL } = require('./ai-config');
+const { failureReason, serviceError } = require('./service-error');
+const { persona } = require('./conversation');
 const permutation = (actual, expected) => Array.isArray(actual) && actual.length === expected.length &&
   new Set(actual).size === actual.length && actual.every(id => expected.includes(id));
 
@@ -39,7 +41,7 @@ function applyPresentation(reply, type, plan) {
   });
   let summary = plan.summaryTemplate.replace(/\{\{(\w+)\}\}/g, (_, key) => String(view.variables[key]));
   if (view.variables.unknown && view.variables.unknown !== '0') summary += ` และยังมี ${view.variables.unknown} ออเดอร์ที่ต้องตรวจสถานะเพิ่มเติมครับ`;
-  const result = card(plan.title, view.subtitle, sections, view.note, view.altDetail, view.metric);
+  const result = card(plan.title, view.subtitle, sections, view.note, view.altDetail, view.metric, view.footerLabel);
   // Preserve all original factual fields and notes. Only the approved summary is added.
   result.message.contents.body.contents.unshift({ type: 'text', text: summary, size: 'sm', color: '#172338', wrap: true });
   result.message.contents.body.spacing = plan.density === 'compact' ? 'sm' : 'md';
@@ -55,11 +57,11 @@ function createPresenter(config, fetcher = fetch) {
     if (!spec || !canContinue()) return fallback;
     try {
       const response = await fetcher(config.openaiResponsesUrl || DEFAULT_RESPONSES_URL, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4500),
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(6500),
         headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: config.openaiResponseModel || config.openaiModel, store: false, max_output_tokens: 700,
-          instructions: policy.presenterInstructions,
+          instructions: `${policy.presenterInstructions}\nReply style: ${persona.replyStyle}`,
           input: JSON.stringify({ kind: type, facts: spec.facts, sections: spec.sections }),
           text: { format: { type: 'json_schema', name: 'shipx_line_card', strict: true, schema: {
             type: 'object', additionalProperties: false,
@@ -74,15 +76,16 @@ function createPresenter(config, fetcher = fetch) {
           } } },
         }),
       });
-      if (!response.ok || !canContinue()) return fallback;
+      if (!response.ok) throw serviceError('AI', '/v1/responses', 'presentation_request', response.status);
+      if (!canContinue()) return fallback;
       const raw = await response.text();
-      if (raw.length > 100000) return fallback;
+      if (raw.length > 100000) return { ...fallback, reason: 'response_not_verified' };
       const json = JSON.parse(raw);
-      if (json.status && json.status !== 'completed') return fallback;
+      if (json.status && json.status !== 'completed') return { ...fallback, reason: 'response_not_verified' };
       const output = json.output?.find(item => item.type === 'message')?.content?.find(item => item.type === 'output_text');
-      if (!output) return fallback;
+      if (!output) return { ...fallback, reason: 'response_not_verified' };
       return { reply: applyPresentation(reply, type, JSON.parse(output.text)), outcome: 'generated' };
-    } catch { return fallback; }
+    } catch (error) { return { ...fallback, reason: failureReason(error) }; }
   };
 }
 module.exports = { createPresenter, presentationSpec, applyPresentation };

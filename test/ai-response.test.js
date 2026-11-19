@@ -46,6 +46,22 @@ test('AI base URL defaults to OpenAI and rejects unsafe values', () => {
   }
 });
 
+test('AI failure preserves the recognized Thai command and records a sanitized status for diagnosis', async t => {
+  const store = setup(t);
+  const classify = createClassifier({ openaiApiKey: 'mock-key', openaiModel: 'mock-model' }, async () =>
+    new Response('upstream-secret', { status: 401 }));
+  const result = await answerCommand({ store, groupId, text: 'เช็กสต๊อกSKU 8850000000001', classify,
+    shipx: { findStock: async (companyId, reference) => {
+      assert.equal(companyId, 101);
+      assert.equal(reference, '8850000000001');
+      return { outcome: 'found', stock: { sku: 'SKU001', ready: 12 } };
+    } },
+  });
+  assert.match(result.text, /จำนวนพร้อมขาย: 12/);
+  assert(store.audits().some(row => row.action === 'ai.command' && row.detail === 'HTTP 401'));
+  assert.doesNotMatch(JSON.stringify(store.audits()), /upstream-secret|mock-key/);
+});
+
 test('second AI call generates a validated card plan without receiving identifiers or upstream free text', async () => {
   const reply=orderReply({orderNo:'PRIVATE-ORDER',status:'กำลังแพ็คสินค้า',carrier:'PRIVATE-CARRIER',tracking:'001239999999'});
   const config={openaiApiKey:'fake',openaiModel:'planner-model',openaiResponseModel:'reply-model'};
@@ -104,7 +120,8 @@ test('unknown-status warning survives presentation and calculations stay exact',
   assert.match(result.text,/ต้องตรวจสถานะเพิ่มเติม/);
   assert.match(result.text,/ยังตรวจสถานะไม่ได้: 1/);
   assert.match(result.text,/แพ็คเสร็จแล้ว: 4/);
-  assert.match(result.text,/ต้องส่งทั้งหมด: 8/);
+  assert.match(result.text,/ออเดอร์ตามกำหนดส่งทั้งหมด: 10/);
+  assert.match(result.text,/เหลือหลังหักยกเลิก: 9/);
   assert.match(result.text,/50%/);
 });
 
@@ -121,7 +138,7 @@ test('worker runs AI command -> scoped API -> AI presentation -> LINE, and leave
       sequence.push('shipx');assert.equal(company,101);assert.equal(reference,'SO001');
       return {outcome:'found',order:{orderNo:'SO001',status:'กำลังแพ็คสินค้า'}};
     }},
-    line:{reply:async(token,text,message)=>{sequence.push('line');assert.equal(token,'reply');assert.match(text,/เช็กให้แล้วครับ/);assert.equal(message.type,'flex');}},
+    line:{reply:async(token,text,message)=>{sequence.push('line');assert.equal(token,'reply');assert.match(text,/เช็กให้แล้วครับ/);assert.equal(message.type,'flex');assert.equal(message.contents.footer.contents[0].text,'ABC Logistics');}},
   });
   store.enqueue([{webhookEventId:'ai-two-stage',timestamp:Date.now(),type:'message',source:{type:'group',groupId},command:'order SO001',replyToken:'reply'}]);
   await worker.tick();
