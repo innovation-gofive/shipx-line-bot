@@ -6,4 +6,5 @@ data/
 artifacts/
 *.log
 *.sqlite*
+shipx-token.key
 **/*.bak

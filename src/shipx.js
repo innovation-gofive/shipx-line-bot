@@ -101,13 +101,16 @@ function dailySummary(date, total, statuses, cancelledOrders) {
   return row;
 }
 class ShipXClient {
-  constructor(config, fetcher = fetch) { this.config = config; this.fetcher = fetcher; }
+  constructor(config, fetcher = fetch, tokens = null) { this.config = config; this.fetcher = fetcher; this.tokens = tokens; }
   async request(endpoint, params, signal, body) {
     const url = new URL(endpoint, this.config.shipxBaseUrl);
     for (const [key, value] of Object.entries(params || {})) url.searchParams.set(key, String(value));
     const headers = { Accept: 'application/json' };
     if (body) headers['Content-Type'] = 'application/json';
-    Object.assign(headers, shipxAuth(this.config).headers);
+    const token = this.tokens?.token();
+    const auth = token ? { mode: 'bearer', headers: { Authorization: `Bearer ${token}` } } : shipxAuth(this.config, { allowMissing: true });
+    if (auth.mode === 'unconfigured') throw serviceError('ShipX', endpoint, 'authentication_required');
+    Object.assign(headers, auth.headers);
     let response;
     try {
       response = await this.fetcher(url, { headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined, redirect: 'error', signal: signal || AbortSignal.timeout(10000) });

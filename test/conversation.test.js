@@ -75,6 +75,7 @@ test('API key mode and auto mode exclude a stale JWT while explicit both mode re
   await client.companies();
   const env = { APP_URL: 'https://bot.example.test', ADMIN_PASSWORD: 'a-long-test-password', LINE_CHANNEL_SECRET: 'mock', LINE_CHANNEL_ACCESS_TOKEN: 'mock',
     SHIPX_BASE_URL: 'https://shipx.example.test', SHIPX_AUTH_MODE: 'api-key' };
-  assert.throws(() => loadConfig(env), /SHIPX_API_KEY is required/);
+  assert.equal(loadConfig(env).shipxAuthMode, 'api-key'); // Admin can configure a token after startup.
+  assert.throws(() => shipxAuth({ shipxAuthMode: 'api-key' }), /SHIPX_API_KEY is required/);
   assert.equal(loadConfig({ ...env, SHIPX_API_KEY: 'machine-key' }).shipxAuthMode, 'api-key');
 });

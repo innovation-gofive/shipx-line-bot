@@ -11,7 +11,7 @@ const { stockReply } = require('./replies');
 const { createNotifications } = require('./notifications');
 const { failureReason } = require('./service-error');
 const { auditWorkbook } = require('./audit-export');
-const { shipxAuth } = require('./shipx-auth');
+const { tokenSettings } = require('./shipx-token');
 const { shippingReportPage, renderShippingReport } = require('./shipping-report');
 const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
 const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
@@ -34,7 +34,7 @@ function limiter(max, windowMs) {
     next();
   };
 }
-async function createApp({ config, store, shipx, line }) {
+async function createApp({ config, store, shipx, line, tokens = null }) {
   const app = express(), salt = randomBytes(32), passwordKey = await deriveKey(config.adminPassword, salt, 64);
   const classify = createClassifier(config), present = createPresenter(config);
   const worker = createWorker({ config, store, shipx, line, classify, present });
@@ -139,6 +139,12 @@ async function createApp({ config, store, shipx, line }) {
     res.cookie('shipx_session', token, cookieOptions).json({ csrf, username: config.adminUsername });
   });
   app.use('/api/admin', requireSession, limiter(300, 60000));
+  app.put('/api/admin/shipx/token', limiter(5, 60000), (req, res) => {
+    if (config.demo) throw fail('Demo ไม่บันทึก Token จริง');
+    if (!tokens) throw fail('ระบบจัดเก็บ Token ยังไม่พร้อมใช้งาน', 503);
+    if (!req.body || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, 'token')) throw fail('กรุณาวาง Token ของ ShipX ให้ถูกต้อง');
+    res.json({ tokenStatus: tokens.save(req.body.token, config.adminUsername) });
+  });
   app.get('/api/admin/session', (req, res) => res.json({ csrf: req.session.csrf, username: config.adminUsername }));
   app.post('/api/admin/logout', (req, res) => {
     store.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(req.session.token_hash);
@@ -150,11 +156,13 @@ async function createApp({ config, store, shipx, line }) {
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: NOTIFICATION_TIME_ZONE }).format(new Date());
     res.attachment(`shipx-audit-${day}.xlsx`).send(Buffer.from(data));
   });
-  app.get('/api/admin/settings', (req, res) => res.json({
+  app.get('/api/admin/settings', (req, res) => {
+    const shipxStatus = tokenSettings(config, tokens);
+    res.json({
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
-    lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && !!(config.shipxApiKey || config.shipxBearer),
-    shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: !!config.shipxApiKey, bearerConfigured: !!config.shipxBearer,
-    shipxAuthMode: shipxAuth(config).mode,
+    lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && shipxStatus.configured,
+    shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: shipxStatus.apiKeyConfigured, bearerConfigured: shipxStatus.bearerConfigured,
+    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus,
     aiConfigured: !!classify, aiResponseConfigured: !!present,
     aiModel: config.openaiModel || DEFAULT_MODEL, aiResponseModel: config.openaiResponseModel || config.openaiModel || DEFAULT_MODEL,
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
@@ -162,7 +170,8 @@ async function createApp({ config, store, shipx, line }) {
     shippingEndpoint: SHIPPING_ENDPOINT, shippingDateConfirmed: config.demo || !!config.shippingDateIsDueDate,
     notificationTime: DEFAULT_NOTIFICATION_TIME, notificationTimeZone: NOTIFICATION_TIME_ZONE,
     shippingHistoryEndpoint: SHIPPING_HISTORY_ENDPOINT, shippingSummaryTime: DEFAULT_SHIPPING_SUMMARY_TIME,
-  }));
+    });
+  });
   app.post('/api/admin/ai/test', limiter(3, 60000), async (req, res) => {
     if (config.demo) throw fail('Demo ไม่เรียก AI จริง ใช้คำสั่งทดสอบ AI ตามคู่มือหรือเปิดในระบบที่ตั้งค่าคีย์แล้ว');
     if (!classify) throw fail('กรุณาตั้ง OPENAI_API_KEY ใน Coolify แล้ว redeploy ก่อน');
@@ -180,7 +189,13 @@ async function createApp({ config, store, shipx, line }) {
   });
   app.post('/api/admin/companies/sync', limiter(5, 60000), async (req, res) => {
     let companies;
-    try { companies = await shipx.companies(); } catch { throw fail('ดึงรายชื่อบริษัทไม่สำเร็จ กรุณาตรวจ URL และสิทธิ์ API ใน Coolify', 502); }
+    try { companies = await shipx.companies(); }
+    catch (error) {
+      store.audit({ actor: config.adminUsername, action: 'companies.sync', outcome: 'upstream_error', detail: failureReason(error) });
+      throw fail(error.statusCode === 401 ? 'ShipX ไม่ยอมรับ Token หรือ Token หมดอายุ กรุณาวาง Token ใหม่ในหน้าการเชื่อมต่อ' :
+        error.reason === 'authentication_required' ? 'กรุณาบันทึก Token ของ ShipX ในหน้าการเชื่อมต่อก่อน' :
+        'ดึงรายชื่อบริษัทไม่สำเร็จ กรุณาตรวจ Token สิทธิ์บัญชี และ URL ของ ShipX', 502);
+    }
     store.saveCompanies(companies);
     store.audit({ actor: config.adminUsername, action: 'companies.sync', outcome: 'success' });
     res.json({ companies });

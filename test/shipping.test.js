@@ -9,7 +9,7 @@ const { createNotifications } = require('../src/notifications');
 const { answerCommand, createWorker } = require('../src/bot');
 const { shippingReply, stockReply } = require('../src/replies');
 const groupId = 'C'+'1'.repeat(32), now = new Date('2026-11-05T09:00:00Z');
-const config = { shipxBaseUrl:'https://example.test', shippingDateIsDueDate:true };
+const config = { shipxBaseUrl:'https://example.test', shipxApiKey:'test-key', shippingDateIsDueDate:true };
 const response = data => Response.json(data);
 const row = (orderId, status) => ({ orderId, companyId:101, shippingDate:'2026-11-05T08:00:00+07:00', orderDocumentNo:'SO'+orderId, status, shippingPlatform:'Shopee', customerPhone:'SECRET', shippingAddress:'SECRET' });
 const page = (rows, hasMore=false) => response({data:{data:rows,hasMore}});

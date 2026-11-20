@@ -4,12 +4,14 @@ const { Store } = require('./src/store');
 const { ShipXClient } = require('./src/shipx');
 const { LineClient } = require('./src/line');
 const { createApp } = require('./src/app');
+const { ShipXTokenStore } = require('./src/shipx-token');
 async function main() {
   const config = loadConfig(process.env, process.argv.includes('--demo'));
   const store = new Store(config.databasePath);
   if (config.demo) store.seedDemo();
-  const shipx = new ShipXClient(config), line = new LineClient(config);
-  const { app, worker } = await createApp({ config, store, shipx, line });
+  const tokens = new ShipXTokenStore(config, store);
+  const shipx = new ShipXClient(config, fetch, tokens), line = new LineClient(config);
+  const { app, worker } = await createApp({ config, store, shipx, line, tokens });
   const server = app.listen(config.port, '0.0.0.0', () => console.log('ShipX LINE Bot: http://localhost:' + config.port + (config.demo ? ' (DEMO)' : ' (live)')));
   worker.start();
   let shuttingDown = false;

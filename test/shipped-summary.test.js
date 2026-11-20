@@ -8,7 +8,7 @@ const { dailyShippedReply } = require('../src/replies');
 
 const groupId = 'C' + '1'.repeat(32), secondGroupId = 'C' + '2'.repeat(32);
 const cutoff = new Date('2026-11-11T18:00:00+07:00');
-const config = { shipxBaseUrl: 'https://example.test', origin: 'https://bot.example.test', shippingDateIsDueDate: true };
+const config = { shipxBaseUrl: 'https://example.test', shipxApiKey: 'test-key', origin: 'https://bot.example.test', shippingDateIsDueDate: true };
 const batch = (id, items, overrides = {}) => ({
   summaryPlatformBatchId: id, companyId: 101, dateCreated: '2026-11-10T17:30:00Z', platform: 'Shopee', items, ...overrides,
 });

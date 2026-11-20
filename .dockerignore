@@ -8,5 +8,6 @@ docs
 scripts
 artifacts
 *.log
+**/shipx-token.key
 **/*.bak
 README.md

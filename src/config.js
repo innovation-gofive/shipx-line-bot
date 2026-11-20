@@ -21,7 +21,8 @@ function loadConfig(env, demoFlag = false) {
     if (url.username || url.password || url.search || url.hash || !['/', '/api', '/api/'].includes(url.pathname)) throw new Error('SHIPX_BASE_URL must contain only the origin or end with /api.');
     if (production && url.protocol !== 'https:') throw new Error('SHIPX_BASE_URL must use HTTPS in production.');
     baseUrl = url.origin;
-    if (shipxAuth(auth).mode === 'unconfigured') throw new Error('Configure SHIPX_API_KEY or SHIPX_BEARER_TOKEN.');
+    // Allow the admin console to start before a ShipX token is entered in settings.
+    shipxAuth(auth, { allowMissing: true });
   }
   const port = Number(env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT.');
