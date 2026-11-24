@@ -24,3 +24,19 @@ function orderStatus(value) {
 }
 
 module.exports = { orderStatus };
+
+// Colours follow the supplied ShipX status-filter reference.
+const themes = {
+  1001: ['#64748B', '#F1F5F9'], 1003: ['#2563EB', '#DBEAFE'],
+  2001: ['#6366F1', '#E0E7FF'], 2002: ['#9333EA', '#F3E8FF'],
+  2003: ['#854D0E', '#FEF08A'], 2004: ['#0284C7', '#E0F2FE'],
+  2005: ['#7C3AED', '#EDE9FE'], 4002: ['#059669', '#D1FAE5'],
+  3001: ['#E11D48', '#FFE4E6'], 3003: ['#DB2777', '#FCE7F3'],
+  3004: ['#F43F5E', '#FFE4E6'], 5001: ['#EA580C', '#FFEDD5'], 5002: ['#EA580C', '#FFEDD5'],
+};
+function statusTheme(label) {
+  const code = [...statuses].find(([, [name]]) => name === label)?.[0];
+  const [color, background] = themes[code] || ['#475569', '#F1F5F9'];
+  return { color, background };
+}
+module.exports.statusTheme = statusTheme;

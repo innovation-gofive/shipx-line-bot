@@ -41,9 +41,10 @@ function applyPresentation(reply, type, plan) {
   });
   let summary = plan.summaryTemplate.replace(/\{\{(\w+)\}\}/g, (_, key) => String(view.variables[key]));
   if (view.variables.unknown && view.variables.unknown !== '0') summary += ` และยังมี ${view.variables.unknown} ออเดอร์ที่ต้องตรวจสถานะเพิ่มเติมค่ะ`;
-  const result = card(plan.title, view.subtitle, sections, view.note, view.altDetail, view.metric, view.footerLabel);
+  const result = card(plan.title, view.subtitle, sections, view.note, view.altDetail, view.metric, view.footerLabel, view.theme);
   // Preserve all original factual fields and notes. Only the approved summary is added.
-  result.message.contents.body.contents.unshift({ type: 'text', text: summary, size: 'sm', color: '#172338', wrap: true });
+  // Keep report cards scannable. Long AI summaries remain in the accessible text reply.
+  if (!['overview', 'shipping', 'shipping_issues'].includes(type)) result.message.contents.body.contents.unshift({ type: 'text', text: summary, size: 'sm', color: '#172338', wrap: true });
   result.message.contents.body.spacing = plan.density === 'compact' ? 'sm' : 'md';
   result.text = summary + '\n' + result.text;
   return result;

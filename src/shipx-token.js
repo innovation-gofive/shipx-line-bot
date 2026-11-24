@@ -86,17 +86,24 @@ class ShipXTokenStore {
   }
 }
 
-function tokenSettings(config, tokens) {
+function tokenHealth(status, now = Date.now()) {
+  const remainingMs = status.expiresAt === null || status.expiresAt === undefined ? null : status.expiresAt - now;
+  const expired = remainingMs !== null && remainingMs <= 0;
+  const expiresSoon = remainingMs !== null && remainingMs > 0 && remainingMs <= 86400000;
+  const warning = status.error ? 'unreadable' : !status.configured ? 'missing' : expired ? 'expired' : expiresSoon ? 'expiring' : null;
+  return { ...status, expired, expiresSoon, remainingMinutes: remainingMs === null ? null : Math.max(0, Math.ceil(remainingMs / 60000)), warning };
+}
+function tokenSettings(config, tokens, now = Date.now()) {
   const saved = tokens?.status();
-  if (saved?.saved) return { ...saved, mode: 'bearer', apiKeyConfigured: false, bearerConfigured: saved.configured };
+  if (saved?.saved) return tokenHealth({ ...saved, mode: 'bearer', apiKeyConfigured: false, bearerConfigured: saved.configured }, now);
   const auth = shipxAuth(config, { allowMissing: true });
   const usesBearer = auth.mode === 'bearer' || auth.mode === 'both';
   const expiresAt = usesBearer ? tokenExpiry(config.shipxBearer) : null;
-  return {
+  return tokenHealth({
     saved: false, configured: auth.mode !== 'unconfigured', source: auth.mode === 'unconfigured' ? 'none' : 'environment',
     mode: auth.mode, updatedAt: null, expiresAt, expired: expiresAt !== null && expiresAt <= Date.now(),
     apiKeyConfigured: !!auth.headers['X-API-Key'], bearerConfigured: !!auth.headers.Authorization,
-  };
+  }, now);
 }
 
-module.exports = { ShipXTokenStore, tokenSettings, normalizeBearerToken, tokenExpiry };
+module.exports = { ShipXTokenStore, tokenSettings, tokenHealth, normalizeBearerToken, tokenExpiry };

@@ -1,4 +1,5 @@
 const { shippingOrderSections } = require('./shipping-report');
+const { statusTheme } = require('./status');
 const ink = '#172338', muted = '#667489', accent = '#0B62BE', warning = '#9C420E';
 const number = new Intl.NumberFormat('th-TH');
 const money = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -6,15 +7,19 @@ const fmt = value => number.format(value);
 const dateLabel = date => date.split('-').reverse().join('/');
 const text = (value, options = {}) => ({ type: 'text', text: value, wrap: true, color: ink, size: 'sm', ...options });
 const box = (contents, options = {}) => ({ type: 'box', layout: 'vertical', contents, spacing: 'sm', ...options });
-const pair = ([label, value, highlight], emphasis) => ({
+const pair = ([label, value, highlight, style = {}], emphasis) => ({
   type: 'box', layout: 'horizontal', spacing: 'sm',
   contents: emphasis ? [
-    text(label, { flex: 4, gravity: 'center', weight: 'bold', color: '#FFFFFF', size: 'md' }),
+    text(label, { flex: 4, gravity: 'center', weight: 'bold', color: '#FFD36C', size: 'md' }),
     text(value, { flex: 6, align: 'end', weight: 'bold', color: '#FFFFFF', size: 'xxl' }),
-  ] : [text(label, { color: muted, flex: 4 }), text(value, { flex: 6, align: 'end', weight: 'bold', color: highlight ? warning : ink })],
+  ] : [
+    ...(style.logo ? [{ type: 'image', url: style.logo, size: 'xxs', aspectRatio: '1:1', flex: 0, margin: 'none' }] : []),
+    text(label, { color: muted, flex: /^[\d,.%-]+$/.test(value) ? 7 : 4 }),
+    text(value, { flex: /^[\d,.%-]+$/.test(value) ? 3 : 6, align: 'end', weight: 'bold', color: style.color || (highlight ? warning : ink) }),
+  ],
 });
 
-function card(title, subtitle, sections, note, altDetail = subtitle, metric, footerLabel = 'SHIPX  •  ข้อมูลเฉพาะบริษัทของกลุ่มนี้') {
+function card(title, subtitle, sections, note, altDetail = subtitle, metric, footerLabel = 'Shiny × ShipX', theme = {}) {
   const lines = [title, subtitle];
   if (metric) lines.push(`${metric.label}: ${metric.value}`);
   const cards = sections.map(({ heading, rows, detail, emphasis }) => {
@@ -25,7 +30,7 @@ function card(title, subtitle, sections, note, altDetail = subtitle, metric, foo
       ...(heading ? [text(heading, { size: 'sm', weight: 'bold', color: accent })] : []),
       ...rows.map(row => pair(row, emphasis)),
       ...(detail ? [text(detail, { size: 'xs', color: muted, margin: 'sm' })] : []),
-    ], { backgroundColor: emphasis ? accent : '#F7F9FC', paddingAll: '12px', cornerRadius: '10px' });
+    ], { backgroundColor: emphasis ? '#172C49' : '#F5F7FB', paddingAll: '16px', cornerRadius: '14px', borderWidth:'1px', borderColor:emphasis ? '#172C49' : '#E6ECF3' });
   });
   if (note) lines.push(note);
   const reply = {
@@ -34,27 +39,53 @@ function card(title, subtitle, sections, note, altDetail = subtitle, metric, foo
       type: 'flex', altText: `${title} · ${altDetail}`.slice(0, 350).toWellFormed(),
       contents: {
         type: 'bubble', size: 'mega',
-        header: box([text(title, { size: 'lg', weight: 'bold' }), text('ShipX  •  ข้อมูลล่าสุดจากระบบ', { color: muted, size: 'xs' })],
-          { backgroundColor: '#FFFFFF', paddingTop: '18px', paddingBottom: '8px', paddingStart: '16px', paddingEnd: '16px' }),
-        body: box([text(subtitle, { size: 'sm', color: muted }),
-          ...(metric ? [box([text(metric.value, { size: 'xxl', weight: 'bold', color: metric.warning ? warning : accent }), text(metric.label, { size: 'xs', color: muted })])] : []),
+        header: box([text('SHINY  ×  SHIPX', {size:'xxs',weight:'bold',color:theme.color || '#FFD36C'}),
+          text(title, { size: 'lg', weight: 'bold', color: theme.color || '#FFFFFF' }), text('ผู้ช่วยดูแลงานคลังของคุณ', { color: theme.color || '#D6E2F2', size: 'xxs' })],
+          { backgroundColor: theme.background || '#172C49', paddingTop: '20px', paddingBottom: '18px', paddingStart: '20px', paddingEnd: '20px' }),
+        body: box([text(subtitle, { size: theme.color ? 'lg' : 'md', weight:'bold', color:ink }),
+          ...(metric ? [box([text(metric.value, { size: 'xxl', weight: 'bold', color: metric.warning ? warning : accent }), text(metric.label, { size: 'xs', color: muted })],
+            {backgroundColor:metric.warning?'#FFF5E6':'#EAF4FF',paddingAll:'16px',cornerRadius:'14px'})] : []),
           ...cards, ...(note ? [text(note, { size: 'xs', color: muted })] : [])],
-          { spacing: 'md', paddingAll: '16px' }),
-        footer: box([text(footerLabel, { color: accent, size: 'xxs', align: 'center' })], { backgroundColor: '#EAF4FF', paddingAll: '10px' }),
+          { spacing: 'md', paddingAll: '20px' }),
+        footer: box([text(footerLabel, { color: muted, size: 'xxs', align: 'center',weight:'bold' })], { backgroundColor: '#FFFFFF', paddingAll: '16px' }),
       },
     },
   };
-  Object.defineProperty(reply, 'view', { value: { title, subtitle, sections, note, altDetail, metric, footerLabel, variables: {} } });
+  Object.defineProperty(reply, 'view', { value: { title, subtitle, sections, note, altDetail, metric, footerLabel, theme, variables: {} } });
   return reply;
 }
 function withVariables(reply, variables) { reply.view.variables = variables; return reply; }
 
+function handoffReply(id, companyName) {
+  const reference = id ? `SH-${String(id).padStart(6,'0')}` : 'รอตรวจสอบเพิ่มเติม';
+  return card('💬 ให้แอดมินช่วยดูต่อค่ะ', 'Shiny ยังยืนยันคำตอบนี้ไม่ได้ค่ะ',
+    [{ rows:[['สถานะ','รอแอดมินตรวจสอบ'],...(id ? [['เลขรับเรื่อง',reference]] : [])], detail:'รอทางแอดมินตรวจสอบเพิ่มเติมให้นะคะ 💛' }],
+    id ? 'บันทึกคำถามให้ทีมดูแลแล้วค่ะ' : 'แอดมินจะช่วยตรวจข้อมูลเพิ่มเติมให้ค่ะ', reference,undefined,companyName || 'Shiny × ShipX',
+    {color:'#9C650C',background:'#FFF1CF'});
+}
+
 function orderReply(order, companyName) {
-  const rows = [['สถานะล่าสุด', order.status]];
+  const theme = statusTheme(order.status);
+  const rows = [['สถานะล่าสุด', order.status, false, {color: theme.color}]];
   if (order.carrier) rows.push(['ขนส่ง', order.carrier]);
   if (order.tracking) rows.push(['เลขพัสดุ', order.tracking]);
   return withVariables(card('📦 สถานะออเดอร์', `เลขออเดอร์ ${order.orderNo}`, [{ rows }], null,
-    `${order.orderNo} · ${order.status}`, undefined, companyName || undefined), { status: order.status });
+    `${order.orderNo} · ${order.status}`, undefined, companyName || undefined, theme), { status: order.status });
+}
+
+function stockOverviewReply(report, reorderOnly = false, companyName = '', page = 0) {
+  const start = page * 8;
+  const rows = reorderOnly ? report.reorder.slice(start, start + 8).map(item => [item.sku, `${fmt(item.ready)} / ${fmt(item.reorderPoint)}`, true]) : [
+    ['SKU ทั้งหมด', fmt(report.totalSkus)], ['มีพร้อมขาย', fmt(report.readySkus)],
+    ['พร้อมขายหมด', fmt(report.outOfStockSkus), report.outOfStockSkus > 0],
+    ['ถึงจุด Reorder', fmt(report.reorderSkus), report.reorderSkus > 0],
+  ];
+  if (!rows.length) rows.push(['ผลการตรวจ', 'ยังไม่มี SKU ถึงจุด Reorder']);
+  return card(reorderOnly ? '🔔 สินค้าถึงจุด Reorder' : '📦 ภาพรวมสต็อก', companyName || 'ข้อมูลของบริษัทในกลุ่มนี้', [{
+    heading: reorderOnly ? 'พร้อมขาย / จุด Reorder' : 'ตรวจจำนวนพร้อมขาย', rows,
+    detail: reorderOnly && report.reorderSkus > 8 ? `แสดง ${start + 1}–${Math.min(start + 8, report.reorderSkus)} จาก ${fmt(report.reorderSkus)} SKU` : undefined,
+  }], `${reorderOnly ? 'ถึงจุดเมื่อจำนวนพร้อมขาย ≤ Reorder Point ของ ShipX' : 'นับเฉพาะจำนวนพร้อมขาย'}${report.missingThresholdSkus ? ` · ยังไม่มีจุด Reorder ${fmt(report.missingThresholdSkus)} SKU` : ''}`,
+  `${fmt(report.reorderSkus)} SKU ถึงจุด Reorder`, { label: reorderOnly ? 'ควรเติมสินค้า' : 'จำนวน SKU', value: fmt(reorderOnly ? report.reorderSkus : report.totalSkus), warning: reorderOnly && report.reorderSkus > 0 }, companyName || undefined);
 }
 
 function stockReply(stock) {
@@ -75,13 +106,14 @@ function overviewReply(days, offset = 0) {
     rows: [
       ['ออเดอร์ทั้งหมด', fmt(day.total)],
       ['ยกเลิก', Number.isInteger(day.cancelled) ? fmt(day.cancelled) : 'ยังตรวจสอบไม่ได้'],
-      ['เหลือหลังหักยกเลิก', Number.isInteger(day.cancelled) ? fmt(day.total - day.cancelled) : 'ยังตรวจสอบไม่ได้'],
-      ['ยังแพ็คไม่เสร็จ', fmt(day.unpacked), day.unpacked > 0],
-      ['แพ็คแล้ว / รอส่ง', fmt(day.awaitingShipment), day.awaitingShipment > 0],
-      ['ต้องติดตาม', fmt(day.attention), day.attention > 0],
-      ...(day.unknown ? [['ยังแยกสถานะไม่ได้', fmt(day.unknown), true]] : []),
+      ['ออเดอร์ใช้งาน', Number.isInteger(day.cancelled) ? fmt(day.total - day.cancelled) : 'ยังตรวจสอบไม่ได้'],
+      ['ยังไม่แพ็ค', fmt(day.unpacked), day.unpacked > 0],
+      ['แพ็คแล้วรอส่ง', fmt(day.awaitingShipment), day.awaitingShipment > 0],
+      ['ปิดงานแล้ว', fmt(day.complete - (day.cancelled || 0))],
+      ['มีปัญหา / คืน', fmt(day.attention), day.attention > 0],
+      ...(day.unknown ? [['ต้องตรวจเพิ่ม', fmt(day.unknown), true]] : []),
     ],
-    detail: day.pendingStatuses.map(status => `${status.label} ${fmt(status.count)}`).join(' · '),
+    detail: 'แต่ละออเดอร์นับในสถานะเดียว ยอดสถานะรวมเท่ากับออเดอร์ใช้งาน',
   }));
   return withVariables(card('📋 ภาพรวมออเดอร์', subtitle, sections, 'ใช้วันที่สั่งซื้อ (OrderDate) ตามเวลาไทย'), {
     total: fmt(days.reduce((sum, day) => sum + day.total, 0)),
@@ -134,7 +166,7 @@ function shippingReply(report, issuesOnly = false, notificationTime = null) {
   });
 }
 
-function dailyShippedReply(report, companyName, notificationTime) {
+function dailyShippedReply(report, companyName, notificationTime, assetBase) {
   const date = dateLabel(report.date);
   const rows = [
     ['Shopee', fmt(report.shopee)],
@@ -144,7 +176,9 @@ function dailyShippedReply(report, companyName, notificationTime) {
     ['B2B', fmt(report.b2b)],
     ...(report.other ? [['อื่น ๆ', fmt(report.other)]] : []),
     ...(report.unknownType ? [['ยังไม่ระบุประเภท', fmt(report.unknownType)]] : []),
-  ];
+  ].filter(([, value]) => value !== '0').map(([label, value]) => [label, value, false,
+    { logo: assetBase && ['Shopee', 'Lazada', 'TikTok'].includes(label) ? new URL(`/assets/platforms/${label.toLowerCase()}.png`, assetBase).href : undefined }]);
+  if (!rows.length) rows.push(['ยังไม่มีงานจัดส่ง', '—']);
   const detail = report.b2bExpress ? `ยอด B2B รวม Express ${fmt(report.b2bExpress)} ออเดอร์` : undefined;
   const sections = [{ rows, detail }, { rows: [['Total', fmt(report.total)]], emphasis: true }];
   return card(`🚚 สรุปงานที่จัดส่ง ${date}`, companyName, sections,
@@ -173,4 +207,4 @@ function shippingFollowUpReply(groups, date, notificationTime, url) {
   return summary;
 }
 
-module.exports = { orderReply, stockReply, overviewReply, salesReply, shippingReply, dailyShippedReply, shippingFollowUpReply, card };
+module.exports = { orderReply, stockReply, overviewReply, salesReply, shippingReply, dailyShippedReply, shippingFollowUpReply, stockOverviewReply, handoffReply, card };

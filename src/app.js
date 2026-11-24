@@ -12,6 +12,7 @@ const { createNotifications } = require('./notifications');
 const { failureReason } = require('./service-error');
 const { auditWorkbook } = require('./audit-export');
 const { tokenSettings } = require('./shipx-token');
+const { choiceByKey } = require('./menus');
 const { shippingReportPage, renderShippingReport } = require('./shipping-report');
 const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, NOTIFICATION_TIME_ZONE } = require('./notification-time');
 const { isCompanyId, COMPANY_ENDPOINT, SEARCH_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
@@ -38,7 +39,8 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
   const app = express(), salt = randomBytes(32), passwordKey = await deriveKey(config.adminPassword, salt, 64);
   const classify = createClassifier(config), present = createPresenter(config);
   const worker = createWorker({ config, store, shipx, line, classify, present });
-  const notifications = createNotifications({ config, store, shipx, line, present });
+  const notifications = createNotifications({ config, store, shipx, line, present, tokens });
+  store.support.importHistory(config.adminUsername);
   store.db.exec('DELETE FROM sessions');
   app.disable('x-powered-by');
   app.set('trust proxy', config.production ? 1 : false);
@@ -74,16 +76,18 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
       if (!event || typeof event !== 'object') return res.sendStatus(400);
       if (event.source?.type !== 'group') continue;
       if (!GROUP_ID.test(event.source.groupId || '') || typeof event.webhookEventId !== 'string' || event.webhookEventId.length > 128 || !event.webhookEventId || !Number.isSafeInteger(event.timestamp)) return res.sendStatus(400);
-      if (!['join', 'leave', 'message'].includes(event.type)) continue;
+      if (!['join', 'leave', 'message', 'postback'].includes(event.type)) continue;
       if (event.timestamp < Date.now() - 20 * 60000 || event.timestamp > Date.now() + 60000) continue;
       // Persist only fields needed by the worker, then redact the payload on completion.
-      const command = event.type === 'message' && event.mode !== 'standby' ? addressedCommand(event.message, body.destination) : null;
+      const selection = event.type === 'postback' && event.mode !== 'standby' ? choiceByKey(store.botAction(event.postback?.data, event.source.groupId)) : null;
+      const command = selection ? selection.command : event.type === 'message' && event.mode !== 'standby' ? addressedCommand(event.message, body.destination) : null;
+      if (event.type === 'postback' && !selection) continue;
       events.push({
-        webhookEventId: event.webhookEventId, timestamp: event.timestamp, type: event.type,
+        webhookEventId: event.webhookEventId, timestamp: event.timestamp, type: selection ? 'message' : event.type,
         source: { type: 'group', groupId: event.source.groupId, userId: typeof event.source.userId === 'string' ? event.source.userId.slice(0, 80) : null },
         replyToken: command !== null && typeof event.replyToken === 'string' ? event.replyToken.slice(0, 256) : null,
-        command,
-        question: command !== null ? event.message.text.slice(0, 450).toWellFormed() : null,
+        command, actionPage: selection?.page || 0, actionToken: selection ? event.postback.data : null,
+        question: selection ? `[กดการ์ด] ${selection.label}` : command !== null ? event.message.text.slice(0, 450).toWellFormed() : null,
       });
     }
     // Apply lifecycle changes immediately, so a leave event revokes an in-flight lookup.
@@ -150,7 +154,20 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     store.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(req.session.token_hash);
     res.clearCookie('shipx_session', { ...cookieOptions, maxAge: undefined }).json({ ok: true });
   });
-  app.get('/api/admin/dashboard', (req, res) => res.json({ stats: store.stats(), groups: store.groups(), companies: store.companies(), audit: store.audits() }));
+  app.get('/api/admin/dashboard', (req, res) => res.json({ stats: { ...store.stats(), supportPending: store.support.counts().pending }, groups: store.groups(), companies: store.companies(), audit: store.audits() }));
+  app.get('/api/admin/attention', (req, res) => res.json({ counts: store.support.counts(), tokenStatus: tokenSettings(config, tokens), adminAlerts: store.support.settings() }));
+  app.get('/api/admin/support', (req, res) => {
+    if (Object.keys(req.query).some(key => !['status','query','page','caseId'].includes(key))) throw fail('ตัวกรองคำถามไม่ถูกต้อง');
+    res.json(store.support.list({ status: req.query.status, query: req.query.query, page: req.query.page === undefined ? 1 : Number(req.query.page), caseId: req.query.caseId === undefined ? undefined : Number(req.query.caseId) }));
+  });
+  app.put('/api/admin/support/:id', (req, res) => {
+    if (!req.body || Object.keys(req.body).some(key => !['status','note','version'].includes(key))) throw fail('ข้อมูลรับเรื่องไม่ถูกต้อง');
+    res.json({ item: store.support.update(Number(req.params.id), req.body, config.adminUsername) });
+  });
+  app.put('/api/admin/admin-alerts', (req, res) => {
+    if (!req.body || Object.keys(req.body).some(key => !['enabled','groupId'].includes(key))) throw fail('ข้อมูลแจ้งเตือนไม่ถูกต้อง');
+    res.json({ settings: store.support.saveSettings(req.body, config.adminUsername) });
+  });
   app.get('/api/admin/audit.xlsx', limiter(5, 60000), async (req, res) => {
     const data = await auditWorkbook(store.exportAudits());
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: NOTIFICATION_TIME_ZONE }).format(new Date());
@@ -162,7 +179,7 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
     lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && shipxStatus.configured,
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: shipxStatus.apiKeyConfigured, bearerConfigured: shipxStatus.bearerConfigured,
-    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus,
+    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus, adminAlerts: store.support.settings(),
     aiConfigured: !!classify, aiResponseConfigured: !!present,
     aiModel: config.openaiModel || DEFAULT_MODEL, aiResponseModel: config.openaiResponseModel || config.openaiModel || DEFAULT_MODEL,
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
@@ -202,8 +219,8 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
   });
   app.put('/api/admin/groups/:id', (req, res) => {
     const b = req.body || {};
-    const optionalFlags = ['stockEnabled', 'reportEnabled', 'alertsEnabled', 'shippingSummaryEnabled'];
-    const keys = ['companyId', 'active', 'orderEnabled', ...optionalFlags, 'alertsTime', 'shippingSummaryTime', 'name', 'revision'];
+    const optionalFlags = ['stockEnabled', 'reportEnabled', 'alertsEnabled', 'shippingSummaryEnabled', 'stockAlertsEnabled'];
+    const keys = ['companyId', 'active', 'orderEnabled', ...optionalFlags, 'alertsTime', 'shippingSummaryTime', 'stockAlertsTime', 'name', 'revision'];
     if (!GROUP_ID.test(req.params.id) || Object.keys(b).some(k => !keys.includes(k)) ||
       !(b.companyId === null || isCompanyId(b.companyId)) || typeof b.active !== 'boolean' || typeof b.orderEnabled !== 'boolean' ||
       optionalFlags.some(key => Object.hasOwn(b, key) && typeof b[key] !== 'boolean') ||
@@ -214,7 +231,15 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     const b = req.body || {};
     if (Object.keys(b).some(k => !['groupId', 'text'].includes(k)) || !GROUP_ID.test(b.groupId || '') || typeof b.text !== 'string' || b.text.length > 250) throw fail('เลือกกลุ่มและใส่คำสั่งให้ถูกต้อง');
     const result = await answerCommand({ store, shipx, groupId: b.groupId, text: b.text, actor: config.adminUsername, classify, present });
-    res.json({ reply: result.text });
+    res.json({ reply: result.text, message: result.message || null });
+  });
+  app.post('/api/admin/test-action', limiter(20, 60000), async (req, res) => {
+    const b = req.body || {};
+    if (Object.keys(b).some(k => !['groupId', 'data'].includes(k)) || !GROUP_ID.test(b.groupId || '') || typeof b.data !== 'string') throw fail('เลือกกลุ่มให้ถูกต้อง');
+    const choice = choiceByKey(store.botAction(b.data, b.groupId));
+    if (!choice) throw fail('ปุ่มหมดอายุหรือสิทธิ์เปลี่ยนแล้ว กรุณาพิมพ์ help ใหม่');
+    const result = await answerCommand({ store, shipx, groupId: b.groupId, text: choice.command, actionPage: choice.page, question: `[กดการ์ด] ${choice.label}`, actor: config.adminUsername, classify, present });
+    res.json({ reply: result.text, message: result.message || null });
   });
   app.use('/api', (req, res) => res.status(404).json({ error: 'ไม่พบ API นี้' }));
   app.use(express.static(path.join(__dirname, '..', 'public'), { etag: true, maxAge: 0 }));

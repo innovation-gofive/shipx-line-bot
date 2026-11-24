@@ -123,7 +123,7 @@ test('overview keeps cancelled orders in the gross total and shows the remainder
   }) }));
   const rows = await client.orderOverview(101, 1, now);
   const reply = require('../src/replies').overviewReply(rows);
-  assert.match(reply.text, /ออเดอร์ทั้งหมด: 127\nยกเลิก: 5\nเหลือหลังหักยกเลิก: 122/);
+  assert.match(reply.text, /ออเดอร์ทั้งหมด: 127\nยกเลิก: 5\nออเดอร์ใช้งาน: 122/);
 });
 
 test('overview uses a complete company-scoped order list by order date without status filters', async () => {
@@ -201,7 +201,7 @@ test('feature opt-in is independent; permission changes during AI or ShipX suppr
 test('LINE client submits the Flex card from a scoped report without including other groups', async t => {
   const store=new Store(':memory:'); t.after(()=>store.close()); store.seedDemo();
   const result=await answerCommand({store,shipx:new ShipXClient({demo:true}),groupId,text:'สรุปออเดอร์ค้างวันนี้และย้อนหลัง 2 วัน'});
-  assert.match(result.text,/ยังแพ็คไม่เสร็จ/);
+  assert.match(result.text,/ยังไม่แพ็ค/);
   assert.match(result.text,/เมื่อวาน/);
   assert.match(result.text,/สองวันก่อน/);
   const line=new LineClient({lineToken:'fake'},async (url,options)=>{

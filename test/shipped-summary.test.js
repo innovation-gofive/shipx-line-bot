@@ -63,7 +63,7 @@ test('shipping summaries fail closed when ShipX cannot verify batch or order det
   }
 });
 
-test('LINE Flex includes the company, channels, B2B and highlighted total, even with a zero channel', async () => {
+test('LINE Flex includes the company, nonzero channels, B2B and highlighted total', async () => {
   const report = await new ShipXClient({ demo: true }).dailyShippedOrders(101, cutoff);
   const { message } = dailyShippedReply(report, 'Ikigai', '18:00');
   assert.equal(message.type, 'flex');
@@ -71,7 +71,7 @@ test('LINE Flex includes the company, channels, B2B and highlighted total, even 
   const [company, channels, total, note] = message.contents.body.contents;
   assert.equal(company.text, 'Ikigai');
   assert.deepEqual(channels.contents.filter(row => row.type === 'box').map(row => row.contents.map(cell => cell.text)), [
-    ['Shopee', '120'], ['Lazada', '13'], ['TikTok', '215'], ['Express (B2C)', '0'], ['B2B', '4'],
+    ['Shopee', '120'], ['Lazada', '13'], ['TikTok', '215'], ['B2B', '4'],
   ]);
   assert.match(channels.contents.at(-1).text, /B2B รวม Express 1/);
   assert.notEqual(total.backgroundColor, channels.backgroundColor);

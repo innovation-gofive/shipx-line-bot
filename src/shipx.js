@@ -2,6 +2,8 @@ const { orderStatus } = require('./status');
 const { REFERENCE } = require('./intent');
 const { serviceError, failureReason } = require('./service-error');
 const { shipxAuth } = require('./shipx-auth');
+const { orderPage } = require('./order-page');
+const { stockOverview } = require('./stock-report');
 const SEARCH_ENDPOINT = '/api/v2/Order/search';
 const COMPANY_ENDPOINT = '/api/v1/Company/GetListCompany';
 const VARIANT_ENDPOINT = '/api/v2/Product/variant';
@@ -97,7 +99,9 @@ function dailySummary(date, total, statuses, cancelledOrders) {
     throw serviceError('ShipX', DAILY_ENDPOINT, 'cancelled_count_not_verified');
   }
   row.cancelled = cancelledOrders ?? row.cancelled ?? (sum === total ? 0 : null);
-  row.unknown += total - sum;
+  const unlistedCancelled = !seen.has(3001) ? row.cancelled || 0 : 0;
+  row.complete += unlistedCancelled;
+  row.unknown += total - sum - unlistedCancelled;
   return row;
 }
 class ShipXClient {
@@ -128,6 +132,7 @@ class ShipXClient {
     return json;
   }
   get(endpoint, params, signal) { return this.request(endpoint, params, signal); }
+  stockOverview(companyId, signal) { return stockOverview(this, companyId, signal); }
   async companies() {
     if (this.config.demo) return [{ id: 101, name: 'ABC Logistics' }, { id: 202, name: 'บริษัท สยามรีเทล จำกัด' }];
     const json = await this.get(COMPANY_ENDPOINT);
@@ -303,17 +308,10 @@ class ShipXClient {
       const json = await this.request(SHIPPING_ENDPOINT, {}, signal, {
         companyIds: [companyId], ...range, pageNumber: page, pageSize: 100, sortBy: 'orderId', sortOrder: 'asc',
       });
-      const data = Array.isArray(json.data?.data) || Array.isArray(json.data?.items) ? json.data : json;
-      const rows = data.data ?? data.items;
-      const metadata = data.pagination ?? data;
-      const currentPage = metadata.currentPage ?? metadata.pageNumber;
-      const hasMore = data.hasMore ?? metadata.hasNext ?? (count(metadata.totalPages) ? page < metadata.totalPages : null);
-      if (!Array.isArray(rows) || typeof hasMore !== 'boolean' || rows.length > 100 || (currentPage != null && currentPage !== page)) {
-        throw error('order_pagination_not_verified');
-      }
-      if (Object.hasOwn(metadata, 'totalCount')) {
-        if (!count(metadata.totalCount) || (totalCount !== undefined && metadata.totalCount !== totalCount)) throw error('order_count_changed_during_pagination');
-        totalCount = metadata.totalCount;
+      const { rows, hasMore, totalCount: pageTotal } = orderPage(json, page, 100);
+      if (pageTotal != null) {
+        if (totalCount !== undefined && pageTotal !== totalCount) throw error('order_count_changed_during_pagination');
+        totalCount = pageTotal;
       }
       for (const order of rows) {
         if (order?.companyId !== companyId) throw error('order_company_not_verified');

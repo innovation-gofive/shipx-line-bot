@@ -6,6 +6,7 @@ const { persona } = require('./conversation');
 const HELP = `เลือก @${persona.name} ใน LINE แล้วพิมพ์คำถามได้เลยค่ะ`;
 const orderWords = /ออเดอร์|ออร์เดอร์|คำสั่งซื้อ|สถานะ|พัสดุ|ติดตาม|order|tracking|status/i;
 const stockWords = /สต(?:๊|็)อก|สต็อค|คงเหลือ|เหลือ\s*(?:เท่าไหร่|เท่าไร|กี่)|พร้อมขาย|\bstock\b|\bsku\b/i;
+const lowStockWords = /ใกล้หมด|จุดสั่งซื้อ|เติม(?:สินค้า|สต[๊็]อก)|สั่งเพิ่ม|ต่ำกว่า|reorder|low.?stock/i;
 const salesWords = /ยอดขาย|รายได้|\bsales\b/i;
 const summaryWords = /สรุป|รายงาน|ภาพรวม|กี่(?:ออเดอร์|รายการ|งาน)|ค้าง|ยังไม่แพ[็คก]|รอแพ[็คก]|\b(?:overview|report|pending)\b/i;
 const shippingWords = /(?:ต้อง|กำหนด|รอ|เตรียม|ครบกำหนด)\s*(?:จัด)?ส่ง|ส่ง\s*(?:วันนี้|เมื่อวาน)|\b(?:due|shipping|dispatch)\b/i;
@@ -16,6 +17,7 @@ const unsupportedDates = /สัปดาห์|อาทิตย์|เดื�
 const blocked = /[\r\n=<>?&\\@]|(?:^|\s)\.{1,2}\/|\bcompany(?:\s*ids?|\b)|บริษัทอื่น|\bignore\b/i;
 const wordPattern = /[A-Za-z0-9][A-Za-z0-9._/-]*/g;
 const english = new Set('order orders status tracking stock sku barcode sales overview report pending today yesterday days day last help check please show for me how many the is of and due shipping dispatch pack packed packing progress issues problem unfinished'.split(' '));
+for (const word of ['reorder', 'low', 'inventory', 'monitor', 'skus', 'available']) english.add(word);
 for (const word of policy.extraEnglishVocabulary || []) if (/^[a-z]+$/.test(word)) english.add(word);
 const segmenter = new Intl.Segmenter('th', { granularity: 'word' });
 const thaiWord = /^\p{Script=Thai}[\p{Script=Thai}\p{M}]*$/u;
@@ -55,6 +57,7 @@ function route(type, text, refs) {
   if (type === 'order' || type === 'stock') {
     return refs.length === 1 ? { type, reference: refs[0] } : { type: 'help' };
   }
+  if (['stock_overview', 'stock_reorder'].includes(type)) return refs.length === 0 ? { type } : { type: 'help' };
   if (['shipping', 'shipping_issues', 'daily_shipped'].includes(type)) {
     const period = reportPeriod(text);
     if (!period || refs.length || /ย้อนหลัง|\blast\b|[23]\s*(?:วัน|days?)/i.test(text)) return { type: 'help' };
@@ -76,6 +79,10 @@ function parseCommand(text) {
   const exact = /^(order|status|สถานะ(?:ออเดอร์)?|เช็ค(?:สถานะ)?|stock|สต๊อก|สต็อก)\s+([A-Za-z0-9][A-Za-z0-9._/-]{0,99})$/i.exec(clean);
   if (exact) return route(stockWords.test(exact[1]) ? 'stock' : 'order', clean, [exact[2]]);
   const { refs } = parts(clean);
+  if ((stockWords.test(clean) || /reorder/i.test(clean)) && lowStockWords.test(clean) && !refs.length) return { type: 'stock_reorder' };
+  if (stockWords.test(clean) && !refs.length) return { type: 'stock_overview' };
+  if (/^(?:มอนิเตอร์|monitor)(?:ออเดอร์|คำสั่งซื้อ| orders?)?(?:หน่อย|ครับ|ค่ะ|ได้ไหม|บ้าง|\s)*$/i.test(clean)) return { type: 'overview', days: 1 };
+  if (!refs.length && /คืบหน้า.*แพ[็คก]|แพ[็คก].*(?:กี่|เท่าไหร่|เท่าไร|เสร็จ)/i.test(clean)) return route(issueWords.test(clean) ? 'shipping_issues' : 'shipping', clean, refs);
   if ((stockWords.test(clean) || /บาร์โค้ด|\bbarcode\b/i.test(clean)) && !orderWords.test(clean)) return route('stock', clean, refs);
   if (salesWords.test(clean) && !stockWords.test(clean)) return route('sales', clean, refs);
   if (!refs.length && shippedReportWords.test(clean) && !dueReportWords.test(clean)) return route('daily_shipped', clean, refs);
@@ -89,6 +96,8 @@ function parseCommand(text) {
 const toolsByType = {
   order: ['lookup_order', 'Read the current status and tracking for one order reference.'],
   stock: ['lookup_sellable_stock', 'Read sellable quantity for one SKU.'],
+  stock_overview: ['get_stock_overview', 'Read company-scoped sellable stock overview and number of SKUs needing replenishment.'],
+  stock_reorder: ['get_reorder_stock', 'Read SKUs with sellable quantity at or below the ShipX reorder point.'],
   overview: ['get_order_overview', 'Read order counts by order creation date, including pending packing statuses.'],
   sales: ['get_sales_report', 'Read sales totals for the requested period.'],
   shipping: ['get_shipping_progress', 'Read orders scheduled for shipping on a date, calculate how many are due, packed, not yet packed, shipped, and percentage packed.'],

@@ -1,7 +1,8 @@
 const { SEARCH_ENDPOINT, VARIANT_ENDPOINT, STOCK_ENDPOINT, DAILY_ENDPOINT, SALES_ENDPOINT, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
 const { parseCommand, interpret, createClassifier, HELP } = require('./intent');
 const { createPresenter } = require('./ai-response');
-const { orderReply, stockReply, overviewReply, salesReply, shippingReply, dailyShippedReply } = require('./replies');
+const { orderReply, stockReply, overviewReply, salesReply, shippingReply, dailyShippedReply, stockOverviewReply, handoffReply } = require('./replies');
+const { helpReply, addChoices, addReorderPage, choiceByKey } = require('./menus');
 const { failureReason } = require('./service-error');
 const { NOTIFICATION_TIME_ZONE } = require('./notification-time');
 const { conversationReply } = require('./conversation');
@@ -11,6 +12,8 @@ const GROUP_ID = /^C[0-9a-f]{32}$/i;
 const features = {
   order: { permission: 'order_enabled', action: 'order.lookup', endpoint: SEARCH_ENDPOINT, label: 'สอบถามสถานะออเดอร์' },
   stock: { permission: 'stock_enabled', action: 'stock.lookup', endpoint: VARIANT_ENDPOINT + ' + ' + STOCK_ENDPOINT, label: 'สอบถามสต๊อก' },
+  stock_overview: { permission: 'stock_enabled', action: 'stock.overview', endpoint: STOCK_ENDPOINT, label: 'ดูภาพรวมสต๊อก' },
+  stock_reorder: { permission: 'stock_enabled', action: 'stock.reorder', endpoint: STOCK_ENDPOINT, label: 'ดูสินค้าถึงจุด Reorder' },
   overview: { permission: 'report_enabled', action: 'report.overview', endpoint: SHIPPING_ENDPOINT + ' / ' + DAILY_ENDPOINT, label: 'ดูรายงานออเดอร์' },
   sales: { permission: 'report_enabled', action: 'report.sales', endpoint: SALES_ENDPOINT, label: 'ดูรายงานยอดขาย' },
   shipping: { permission: 'report_enabled', action: 'report.shipping', endpoint: SHIPPING_ENDPOINT, label: 'ดูความคืบหน้าการจัดส่ง' },
@@ -18,11 +21,18 @@ const features = {
   daily_shipped: { permission: 'report_enabled', action: 'report.daily_shipped', endpoint: SHIPPING_HISTORY_ENDPOINT, label: 'ดูรายงานจัดส่งรายวัน' },
 };
 function active(group) { return !!(group?.active && group.bot_present && group.company_id); }
-async function answerCommand({ store, shipx, groupId, text, actor = null, question, classify = null, present = null }) {
+async function answerCommand({ store, shipx, groupId, text, actor = null, question, classify = null, present = null, actionPage = 0, escalate = false, requestId = null }) {
   const group = store.group(groupId);
   const audit = { actor, groupId, companyId: group?.company_id || null, action: 'bot.request',
     question: String(question ?? text ?? '').slice(0, 450).toWellFormed() };
   const plain = text => ({ text, revision: group?.revision });
+  const handoff = (reason, detail = null) => {
+    const current = store.group(groupId);
+    if (!active(current) || current.company_id !== group.company_id || current.revision !== group.revision) return plain('การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้งค่ะ');
+    const item = escalate && requestId ? store.support.create({ requestId, group, actor, question:audit.question, reason, detail }) : null;
+    if (item) store.audit({ ...audit, action:'support.open',outcome:'open',reference:String(item.id) });
+    return { ...handoffReply(item?.id, group.company_name), revision:group.revision };
+  };
   if (!active(group)) {
     store.audit({ ...audit, outcome: 'denied' });
     return plain('กลุ่มนี้ยังไม่ได้เปิดใช้งาน กรุณาติดต่อผู้ดูแลเพื่อผูกบริษัทและเปิดสิทธิ์ค่ะ');
@@ -46,7 +56,8 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
   const command = await interpret(text, planner, enabledTypes);
   if (command.type === 'help') {
     store.audit({ ...audit, outcome: 'help' });
-    return plain(HELP);
+    if (text.trim() && !/^(?:help|วิธีใช้|ช่วยเหลือ)$/i.test(text.trim())) return handoff('unsupported');
+    return { ...helpReply(store, group, !/^(?:help|วิธีใช้|ช่วยเหลือ)$/i.test(text.trim())), revision: group.revision };
   }
   const feature = features[command.type];
   audit.action = feature.action;
@@ -64,7 +75,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
     return plain(`กลุ่มนี้ยังไม่มีสิทธิ์${feature.label} กรุณาติดต่อผู้ดูแลค่ะ`);
   }
   if (!stillAllowed()) return changed();
-  let reply, outcome, configurationRequired = false;
+  let reply, outcome, nextStockPage = null, configurationRequired = false;
   audit.endpoint = feature.endpoint;
   try {
     if (command.type === 'order') {
@@ -75,12 +86,18 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
       const result = await shipx.findStock(group.company_id, command.reference);
       outcome = result.outcome;
       if (outcome === 'found') reply = stockReply(result.stock);
+    } else if (['stock_overview', 'stock_reorder'].includes(command.type)) {
+      const report = await shipx.stockOverview(group.company_id);
+      const page = Number.isInteger(actionPage) && actionPage > 0 ? Math.min(actionPage, Math.max(0, Math.ceil(report.reorderSkus / 8) - 1)) : 0;
+      reply = stockOverviewReply(report, command.type === 'stock_reorder', group.company_name, page);
+      if (command.type === 'stock_reorder' && (page + 1) * 8 < report.reorderSkus) nextStockPage = page + 1;
+      outcome = 'success';
     } else if (['shipping', 'shipping_issues'].includes(command.type)) {
       reply = shippingReply(await shipx.shippingProgress(group.company_id, new Date(), command.offset || 0), command.type === 'shipping_issues');
       outcome = 'success';
     } else if (command.type === 'daily_shipped') {
       const now = new Date();
-      reply = dailyShippedReply(await shipx.dailyShippedOrders(group.company_id, now, AbortSignal.timeout(20000)), group.company_name, bangkokTime.format(now));
+      reply = dailyShippedReply(await shipx.dailyShippedOrders(group.company_id, now, AbortSignal.timeout(20000)), group.company_name, bangkokTime.format(now), shipx.config?.origin);
       outcome = 'success';
     } else {
       const now = new Date(), offset = command.offset || 0;
@@ -95,6 +112,11 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
     audit.detail = failureReason(error);
   }
   if (!stillAllowed()) return changed();
+  if (reply?.view && group.company_name) {
+    reply.view.footerLabel = group.company_name;
+    const footer = reply.message.contents.footer.contents.at(-1);
+    if (footer?.type === 'text') footer.text = group.company_name;
+  }
   if (reply && present) {
     try {
       const composed = await present(reply, { type: command.type, canContinue: stillAllowed });
@@ -107,13 +129,13 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
   }
   if (!stillAllowed()) return changed();
   store.audit({ ...audit, outcome });
-  if (reply) return { ...reply, revision: group.revision };
-  if (configurationRequired) return plain('รายงานกำหนดส่งยังไม่เปิดใช้งานค่ะ กรุณาให้ผู้ดูแลยืนยันฟิลด์วันที่กำหนดส่งของ ShipX ก่อน');
+  if (reply) {
+    if (nextStockPage !== null) addReorderPage(reply, store, group, nextStockPage);
+    return { ...addChoices(reply, store, group, command.type.startsWith('stock') ? ['reorder', 'stock', 'orders'] : ['orders', 'packing', 'delivery']), revision: group.revision };
+  }
+  if (configurationRequired) return handoff('configuration_required', audit.detail);
   if (outcome === 'not_found') return plain(command.type === 'stock' ? 'ไม่พบ SKU หรือบาร์โค้ดนี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบรหัสสินค้าอีกครั้งค่ะ' : NOT_FOUND);
-  if (outcome === 'stock_unavailable') return plain('พบ SKU นี้แล้ว แต่ยังตรวจสอบยอดสต๊อกไม่ได้ค่ะ');
-  if (outcome === 'ambiguous' || outcome === 'search_limit') return plain(command.type === 'stock' ?
-    'ยังระบุ SKU เดียวไม่ได้ กรุณาตรวจสอบรหัสสินค้าอีกครั้งค่ะ' : 'ยังระบุออเดอร์เดียวไม่ได้ กรุณาใช้เลขเอกสาร Order ที่ครบถ้วนค่ะ');
-  return plain('ตอนนี้ยังตรวจสอบข้อมูลจาก ShipX ไม่ได้ กรุณาลองใหม่ภายหลังค่ะ');
+  return handoff(['stock_unavailable','ambiguous','search_limit'].includes(outcome) ? outcome : 'upstream_error', audit.detail);
 }
 function createWorker({ config, store, shipx, line, classify = createClassifier(config), present = createPresenter(config) }) {
   let running = false, stopping = false, timer, current;
@@ -133,6 +155,11 @@ function createWorker({ config, store, shipx, line, classify = createClassifier(
       return;
     }
     if (event.type !== 'message' || typeof event.command !== 'string' || !event.replyToken) return;
+    // Mapping or permissions may change while this postback is waiting in the queue.
+    if (event.actionToken) {
+      const selection = choiceByKey(store.botAction(event.actionToken, groupId));
+      if (!selection || selection.command !== event.command || (selection.page || 0) !== (event.actionPage || 0)) return;
+    }
     const now = Date.now();
     if (now - receivedAt > 45000 || now - event.timestamp > 55000) {
       store.audit({ groupId, action: 'line.reply', outcome: 'expired' });
@@ -143,7 +170,7 @@ function createWorker({ config, store, shipx, line, classify = createClassifier(
     limits.set(groupId, bucket);
     for (const [key, item] of limits) if (now - item.start > 120000) limits.delete(key);
     if (++bucket.count > 20) { store.audit({ groupId, action: 'bot.request', outcome: 'rate_limited' }); return; }
-    const result = await answerCommand({ store, shipx, groupId, text: event.command, question: event.question, actor: event.source.userId || null, classify, present });
+    const result = await answerCommand({ store, shipx, groupId, text: event.command, actionPage: event.actionPage, question: event.question, actor: event.source.userId || null, classify, present, escalate:true, requestId:event.webhookEventId });
     const latest = store.group(groupId);
     if (latest?.revision !== result.revision) return;
     if (Date.now() - receivedAt >= 50000 || Date.now() - event.timestamp >= 55000) {

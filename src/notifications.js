@@ -1,13 +1,16 @@
 const { randomUUID } = require('node:crypto');
-const { shippingReply, dailyShippedReply, shippingFollowUpReply } = require('./replies');
+const { shippingReply, dailyShippedReply, shippingFollowUpReply, stockOverviewReply } = require('./replies');
+const { addChoices, addReorderPage } = require('./menus');
 const { reportDates, SHIPPING_ENDPOINT, SHIPPING_HISTORY_ENDPOINT } = require('./shipx');
 const { createPresenter } = require('./ai-response');
 const { failureReason } = require('./service-error');
 const { NOTIFICATION_TIME_ZONE } = require('./notification-time');
+const { tokenSettings } = require('./shipx-token');
 const time = new Intl.DateTimeFormat('en-GB', { timeZone: NOTIFICATION_TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const pendingAlert = { table: 'notifications', action: 'notification.shipping', flag: 'alerts_enabled', time: 'alerts_time' };
 const dailySummary = { table: 'shipping_summary_notifications', action: 'notification.shipping_summary', flag: 'shipping_summary_enabled', time: 'shipping_summary_time' };
-const permitted = (group, kind) => !!(group?.active && group.bot_present && group.company_id && group.report_enabled && group[kind.flag]);
+const stockAlert = { table: 'stock_notifications', action: 'notification.stock_reorder', flag: 'stock_alerts_enabled', time: 'stock_alerts_time' };
+const permitted = (group, kind) => !!(group?.active && group.bot_present && group.company_id && group[kind === stockAlert ? 'stock_enabled' : 'report_enabled'] && group[kind.flag]);
 
 function minutesSinceMidnight(value) {
   const [hours, minutes] = value.split(':').map(Number);
@@ -22,10 +25,10 @@ function notificationRun(now, scheduledTime, canCrossMidnight) {
   return { day, cutoff: new Date(`${day}T${scheduledTime}:00+07:00`) };
 }
 
-function createNotifications({ config, store, shipx, line, clock = () => new Date(), present = createPresenter(config) }) {
+function createNotifications({ config, store, shipx, line, tokens = null, clock = () => new Date(), present = createPresenter(config) }) {
   let running = false, stopping = false, timer, current;
   const stopSignal = new AbortController();
-  const kinds = config.shippingDateIsDueDate ? [pendingAlert, dailySummary] : [dailySummary];
+  const kinds = config.shippingDateIsDueDate ? [pendingAlert, dailySummary, stockAlert] : [dailySummary, stockAlert];
 
   async function run(group, kind, now, { day, cutoff }) {
     const { table, action } = kind;
@@ -54,7 +57,17 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
       store.db.prepare(`UPDATE ${table} SET attempts=attempts+1,next_attempt=? WHERE group_id=? AND day=?`)
         .run(now.getTime() + 60000 * (2 ** job.attempts), group.id, day);
       if (!job.payload) {
-        if (isSummary) {
+        if (kind === stockAlert) {
+          const report = await shipx.stockOverview(job.company_id, stopSignal.signal);
+          if (!matches()) { finish('cancelled'); return; }
+          if (!report.reorderSkus) {
+            const outcome = report.missingThresholdSkus ? 'configuration_required' : 'no_issues';
+            finish(outcome); audit(outcome, '/api/v1/stock-analytics', report.missingThresholdSkus ? 'missing_reorder_point' : undefined); return;
+          }
+          const reply = stockOverviewReply(report, true, group.company_name || group.name);
+          if (report.reorderSkus > 8) addReorderPage(reply, store, group, 1);
+          savePayload(addChoices(reply, store, group, ['reorder', 'stock']).message);
+        } else if (isSummary) {
           const [shipped, due] = await Promise.allSettled([
             shipx.dailyShippedOrders(job.company_id, cutoff, stopSignal.signal),
             config.shippingDateIsDueDate ? shipx.shippingFollowUp(job.company_id, cutoff, stopSignal.signal) : null,
@@ -70,7 +83,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
           if (error && job.attempts === 0) throw error;
           store.transaction(() => {
             const messages = [];
-            if (report) messages.push(dailyShippedReply(report, group.company_name || group.name, scheduledTime).message);
+            if (report) messages.push(dailyShippedReply(report, group.company_name || group.name, scheduledTime, config.origin).message);
             if (followUp) {
               let url;
               if (Object.values(followUp).some(orders => orders.length)) {
@@ -117,7 +130,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
       finish('sent');
       audit('sent', '/v2/bot/message/push');
     } catch (error) {
-      if (stopping && isSummary && stopSignal.signal.aborted && error.name === 'AbortError') {
+      if (stopping && (isSummary || kind === stockAlert) && stopSignal.signal.aborted && error.name === 'AbortError') {
         store.db.prepare(`UPDATE ${table} SET attempts=attempts-1,next_attempt=0 WHERE group_id=? AND day=?`).run(group.id, day);
         return;
       }
@@ -132,7 +145,10 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
     running = true;
     try {
       const groups = store.groups();
-      const results = await Promise.allSettled(kinds.map(async kind => {
+      const health = tokenSettings(config, tokens, clock().getTime());
+      store.support.queueToken(health, clock().getTime());
+      const adminWork = store.support.flush(line, config.origin, clock().getTime(), health, () => !stopping);
+      const results = await Promise.allSettled([adminWork, ...kinds.map(async kind => {
         for (const { id } of groups.filter(group => permitted(group, kind))) {
           if (stopping) return;
           const group = store.group(id);
@@ -141,7 +157,7 @@ function createNotifications({ config, store, shipx, line, clock = () => new Dat
           const scheduled = notificationRun(now, group[kind.time], kind === dailySummary);
           if (scheduled) await run(group, kind, now, scheduled);
         }
-      }));
+      })]);
       const rejected = results.find(result => result.status === 'rejected');
       if (rejected) throw rejected.reason;
     } finally { running = false; }

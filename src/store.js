@@ -2,8 +2,9 @@ const { DatabaseSync } = require('node:sqlite');
 const { createHash, randomBytes } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const path = require('node:path');
+const { SupportDesk } = require('./support');
 const { DEFAULT_NOTIFICATION_TIME, DEFAULT_SHIPPING_SUMMARY_TIME, isNotificationTime } = require('./notification-time');
-const notificationTables = ['notifications', 'shipping_summary_notifications'];
+const notificationTables = ['notifications', 'shipping_summary_notifications', 'stock_notifications'];
 const reportTokenHash = token => createHash('sha256').update(token).digest('hex');
 class Store {
   constructor(filename) {
@@ -40,6 +41,10 @@ class Store {
         token_hash TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), company_id INTEGER NOT NULL,
         day TEXT NOT NULL, time TEXT NOT NULL, orders TEXT NOT NULL, expires_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS bot_actions (
+        token_hash TEXT PRIMARY KEY, group_id TEXT NOT NULL, company_id INTEGER NOT NULL,
+        revision INTEGER NOT NULL, action TEXT NOT NULL, expires_at INTEGER NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS shipping_reports_expiry ON shipping_reports(expires_at);
       CREATE INDEX IF NOT EXISTS shipping_reports_group ON shipping_reports(group_id);
       CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
@@ -61,12 +66,28 @@ class Store {
       if (!columns.has('alerts_time')) this.db.exec(`ALTER TABLE groups ADD COLUMN alerts_time TEXT NOT NULL DEFAULT '${DEFAULT_NOTIFICATION_TIME}'`);
       if (!columns.has('shipping_summary_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN shipping_summary_enabled INTEGER NOT NULL DEFAULT 0');
       if (!columns.has('shipping_summary_time')) this.db.exec(`ALTER TABLE groups ADD COLUMN shipping_summary_time TEXT NOT NULL DEFAULT '${DEFAULT_SHIPPING_SUMMARY_TIME}'`);
+      if (!columns.has('stock_alerts_enabled')) this.db.exec('ALTER TABLE groups ADD COLUMN stock_alerts_enabled INTEGER NOT NULL DEFAULT 0');
+      if (!columns.has('stock_alerts_time')) this.db.exec("ALTER TABLE groups ADD COLUMN stock_alerts_time TEXT NOT NULL DEFAULT '09:00'");
     });
     // Use a single app replica with SQLite. Recover jobs after an interrupted restart.
     this.db.prepare("UPDATE jobs SET state='pending' WHERE state='processing'").run();
+    this.support = new SupportDesk(this);
     this.cleanup();
   }
   close() { this.db.close(); }
+  saveBotAction(group, action, now = Date.now()) {
+    const token = randomBytes(24).toString('hex');
+    this.db.prepare('INSERT INTO bot_actions VALUES(?,?,?,?,?,?)').run(reportTokenHash(token), group.id, group.company_id, group.revision, action, now + 86400000);
+    return 'shiny:' + token;
+  }
+  botAction(data, groupId, now = Date.now()) {
+    const token = /^shiny:([a-f0-9]{48})$/.exec(data || '')?.[1];
+    if (!token) return null;
+    const action = this.db.prepare(`SELECT a.action FROM bot_actions a JOIN groups g ON g.id=a.group_id
+      WHERE a.token_hash=? AND a.group_id=? AND a.expires_at>? AND a.company_id=g.company_id
+      AND a.revision=g.revision AND g.active=1 AND g.bot_present=1`).get(reportTokenHash(token), groupId, now);
+    return action?.action || null;
+  }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
@@ -91,7 +112,7 @@ class Store {
   rename(id, name) { this.db.prepare("UPDATE groups SET name=? WHERE id=? AND name=''").run(name.slice(0, 120), id); }
   mapGroup(id, {
     companyId, active, orderEnabled, stockEnabled = false, reportEnabled = false, alertsEnabled = false, alertsTime,
-    shippingSummaryEnabled, shippingSummaryTime, name, revision,
+    shippingSummaryEnabled, shippingSummaryTime, stockAlertsEnabled, stockAlertsTime, name, revision,
   }, actor) {
     return this.transaction(() => {
       const current = this.group(id);
@@ -100,7 +121,8 @@ class Store {
       if (active && (!companyId || !current.bot_present)) throw Object.assign(new Error('ต้องเลือกบริษัทและเชิญ Bot เข้ากลุ่มก่อนเปิดใช้งาน'), { status: 400 });
       const canSendReports = active && reportEnabled;
       if ((alertsEnabled || shippingSummaryEnabled) && !canSendReports) throw Object.assign(new Error('ต้องเปิดใช้งานกลุ่มและสิทธิ์รายงานก่อนเปิดแจ้งเตือน'), { status: 400 });
-      if ([alertsTime, shippingSummaryTime].some(time => time !== undefined && !isNotificationTime(time))) {
+      if (stockAlertsEnabled && (!active || !stockEnabled)) throw Object.assign(new Error('ต้องเปิดใช้งานกลุ่มและสิทธิ์สต๊อกก่อนเปิดแจ้ง Reorder'), { status: 400 });
+      if ([alertsTime, shippingSummaryTime, stockAlertsTime].some(time => time !== undefined && !isNotificationTime(time))) {
         throw Object.assign(new Error('กรุณาเลือกเวลาแจ้งเตือนระหว่าง 00:00 ถึง 23:59'), { status: 400 });
       }
       if (companyId && !this.db.prepare('SELECT id FROM companies WHERE id=?').get(companyId)) throw Object.assign(new Error('กรุณาเลือกบริษัทจากรายการ ShipX'), { status: 400 });
@@ -110,6 +132,8 @@ class Store {
           .run(companyId, +active, +orderEnabled, +stockEnabled, +reportEnabled, +alertsEnabled, alertsTime ?? current.alerts_time,
             canSendReports ? +(shippingSummaryEnabled ?? current.shipping_summary_enabled) : 0,
             shippingSummaryTime ?? current.shipping_summary_time, name, id);
+        this.db.prepare('UPDATE groups SET stock_alerts_enabled=?, stock_alerts_time=? WHERE id=?')
+          .run(active && stockEnabled ? +(stockAlertsEnabled ?? current.stock_alerts_enabled) : 0, stockAlertsTime ?? current.stock_alerts_time, id);
       } catch (e) {
         if (e.message.includes('UNIQUE')) throw Object.assign(new Error('บริษัทนี้มีกลุ่มที่เปิดใช้งานอยู่แล้ว กรุณาปิดกลุ่มเดิมก่อน'), { status: 409 });
         throw e;
@@ -147,7 +171,7 @@ class Store {
     return {
       groups: this.db.prepare('SELECT COUNT(*) AS n FROM groups').get().n,
       active: this.db.prepare('SELECT COUNT(*) AS n FROM groups WHERE active=1 AND (order_enabled=1 OR stock_enabled=1 OR report_enabled=1) AND bot_present=1').get().n,
-      pending: this.db.prepare('SELECT COUNT(*) AS n FROM groups WHERE company_id IS NULL').get().n,
+      pending: this.db.prepare('SELECT COUNT(*) AS n FROM groups WHERE company_id IS NULL AND id NOT IN (SELECT group_id FROM admin_alert_settings WHERE enabled=1 AND group_id IS NOT NULL)').get().n,
       queries: this.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('order.lookup','stock.lookup','report.overview','report.sales','report.shipping','report.shipping_issues','report.daily_shipped') AND at>?").get(Date.now() - 86400000).n,
       queue: this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('pending','processing')").get().n,
     };
@@ -185,6 +209,9 @@ class Store {
     this.db.prepare('DELETE FROM audit WHERE at<?').run(now - 90 * 86400000);
     this.db.prepare('DELETE FROM user_profiles WHERE updated_at<?').run(now - 90 * 86400000);
     this.db.prepare('DELETE FROM shipping_reports WHERE expires_at<=?').run(now);
+    this.db.prepare('DELETE FROM bot_actions WHERE expires_at<=?').run(now);
+    this.db.prepare("DELETE FROM admin_alert_jobs WHERE state!='pending' AND created_at<?").run(now - 90 * 86400000);
+    this.db.prepare("DELETE FROM support_cases WHERE status='resolved' AND updated_at<?").run(now - 90 * 86400000);
     const localDay = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Bangkok' });
     const retentionDay = new Date(now - 8 * 86400000).toISOString().slice(0,10);
     for (const table of notificationTables) {
