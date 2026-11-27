@@ -34,6 +34,8 @@ class ShipXTokenStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS shipx_credentials (
       id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at INTEGER NOT NULL
     )`);
+    const { ShipXOAuth } = require('./shipx-oauth');
+    this.oauth = new ShipXOAuth(this, { clock });
   }
   row() { return this.db.prepare("SELECT * FROM shipx_credentials WHERE id='bearer'").get(); }
   key(create = false) {
@@ -94,6 +96,13 @@ function tokenHealth(status, now = Date.now()) {
   return { ...status, expired, expiresSoon, remainingMinutes: remainingMs === null ? null : Math.max(0, Math.ceil(remainingMs / 60000)), warning };
 }
 function tokenSettings(config, tokens, now = Date.now()) {
+  const automatic = tokens?.oauth?.status();
+  if (automatic?.enabled) {
+    const configured = automatic.expiresAt !== null;
+    const status = tokenHealth({saved:true,configured,source:'automatic',mode:'bearer',apiKeyConfigured:false,bearerConfigured:configured,
+      updatedAt:automatic.lastSuccess,expiresAt:automatic.expiresAt,automatic},now);
+    return {...status,expiresSoon:false,warning:automatic.lastError?'auto_error':status.expired?'auto_error':null};
+  }
   const saved = tokens?.status();
   if (saved?.saved) return tokenHealth({ ...saved, mode: 'bearer', apiKeyConfigured: false, bearerConfigured: saved.configured }, now);
   const auth = shipxAuth(config, { allowMissing: true });

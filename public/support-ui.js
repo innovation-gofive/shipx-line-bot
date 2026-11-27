@@ -7,6 +7,7 @@ const supportReasons = { unsupported:'ยังไม่เข้าใจคำ
 const expiryLabel = value => new Intl.DateTimeFormat('th-TH',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Bangkok'}).format(value);
 function tokenWarningText(status) {
   if (!status) return '';
+  if(status.warning==='auto_error')return 'ต่ออายุ Token ของ ShipX อัตโนมัติไม่สำเร็จ · '+oauthMessage(status.automatic?.lastError);
   if (status.warning === 'expiring') return `Token ของ ShipX จะหมดอายุ ${expiryLabel(status.expiresAt)} น. (เวลาไทย) กรุณาเตรียม Token ใหม่`;
   return { expired:'Token ของ ShipX หมดอายุแล้ว กรุณาบันทึก Token ใหม่เพื่อให้บอทตรวจข้อมูลต่อได้',unreadable:'อ่าน Token ของ ShipX ที่บันทึกไว้ไม่ได้ กรุณาตรวจหน้าการเชื่อมต่อ',missing:'ยังไม่ได้ตั้งค่าการเชื่อมต่อ ShipX กรุณาบันทึก Token หรือกำหนด API Key' }[status.warning] || '';
 }
@@ -86,7 +87,7 @@ function bindSupport() {
 let adminAttentionBusy=false;
 async function pollAdminAttention() {
   if(!state.user||!state.data||document.hidden||adminAttentionBusy)return;adminAttentionBusy=true;
-  try{const result=await api('/api/admin/attention');state.data.stats.supportPending=result.counts.pending;state.settings.shipxTokenStatus=result.tokenStatus;state.settings.adminAlerts=result.adminAlerts;renderAdminAttention();}
+  try{const result=await api('/api/admin/attention');state.data.stats.supportPending=result.counts.pending;state.settings.shipxTokenStatus=result.tokenStatus;state.settings.shipxOAuthStatus=result.oauthStatus;state.settings.adminAlerts=result.adminAlerts;renderAdminAttention();renderOAuthStatus();}
   catch{/* The next poll or refresh can recover without interrupting a note being typed. */}finally{adminAttentionBusy=false;}
 }
 setInterval(pollAdminAttention,30000);

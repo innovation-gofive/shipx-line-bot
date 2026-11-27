@@ -146,8 +146,27 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
   app.put('/api/admin/shipx/token', limiter(5, 60000), (req, res) => {
     if (config.demo) throw fail('Demo ไม่บันทึก Token จริง');
     if (!tokens) throw fail('ระบบจัดเก็บ Token ยังไม่พร้อมใช้งาน', 503);
+    if (tokens.oauth?.enabled()) throw fail('พักการต่ออายุอัตโนมัติก่อนเปลี่ยนเป็น Token แบบกรอกเอง',409);
     if (!req.body || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, 'token')) throw fail('กรุณาวาง Token ของ ShipX ให้ถูกต้อง');
     res.json({ tokenStatus: tokens.save(req.body.token, config.adminUsername) });
+  });
+  app.put('/api/admin/shipx/oauth', limiter(5,60000), (req,res) => {
+    if(config.demo)throw fail('Demo ไม่บันทึกข้อมูลล็อกอินจริง');
+    if(!tokens?.oauth)throw fail('ระบบต่ออายุ Token ยังไม่พร้อมใช้งาน',503);
+    const allowed=['enabled','revision','clientId','grantType','username','password','clientSecret','clearClientSecret','scope','authMethod'];
+    if(!req.body||Object.keys(req.body).some(key=>!allowed.includes(key)))throw fail('ข้อมูลการเชื่อมต่อไม่ถูกต้อง');
+    res.json({status:tokens.oauth.save(req.body,config.adminUsername)});
+  });
+  app.post('/api/admin/shipx/oauth/pause',limiter(5,60000),(req,res)=>{
+    if(config.demo)throw fail('Demo ไม่เปลี่ยนการเชื่อมต่อจริง');
+    if(!tokens?.oauth)throw fail('ระบบต่ออายุ Token ยังไม่พร้อมใช้งาน',503);
+    res.json({status:tokens.oauth.pause(config.adminUsername)});
+  });
+  app.post('/api/admin/shipx/oauth/test',limiter(3,60000),async(req,res)=>{
+    if(config.demo)throw fail('Demo ไม่เรียกบริการล็อกอินจริง');
+    if(!tokens?.oauth?.enabled())throw fail('กรุณาบันทึกและเปิดโหมดอัตโนมัติก่อน');
+    try{await tokens.oauth.ensure({force:true,manual:true});res.json({ok:true,status:tokens.oauth.status()});}
+    catch{res.json({ok:false,status:tokens.oauth.status()});}
   });
   app.get('/api/admin/session', (req, res) => res.json({ csrf: req.session.csrf, username: config.adminUsername }));
   app.post('/api/admin/logout', (req, res) => {
@@ -155,7 +174,7 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     res.clearCookie('shipx_session', { ...cookieOptions, maxAge: undefined }).json({ ok: true });
   });
   app.get('/api/admin/dashboard', (req, res) => res.json({ stats: { ...store.stats(), supportPending: store.support.counts().pending }, groups: store.groups(), companies: store.companies(), audit: store.audits() }));
-  app.get('/api/admin/attention', (req, res) => res.json({ counts: store.support.counts(), tokenStatus: tokenSettings(config, tokens), adminAlerts: store.support.settings() }));
+  app.get('/api/admin/attention', (req, res) => res.json({ counts: store.support.counts(), tokenStatus: tokenSettings(config, tokens), oauthStatus:tokens?.oauth?.status() || null, adminAlerts: store.support.settings() }));
   app.get('/api/admin/support', (req, res) => {
     if (Object.keys(req.query).some(key => !['status','query','page','caseId'].includes(key))) throw fail('ตัวกรองคำถามไม่ถูกต้อง');
     res.json(store.support.list({ status: req.query.status, query: req.query.query, page: req.query.page === undefined ? 1 : Number(req.query.page), caseId: req.query.caseId === undefined ? undefined : Number(req.query.caseId) }));
@@ -179,7 +198,7 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
     lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && shipxStatus.configured,
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: shipxStatus.apiKeyConfigured, bearerConfigured: shipxStatus.bearerConfigured,
-    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus, adminAlerts: store.support.settings(),
+    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus, shipxOAuthStatus:tokens?.oauth?.status() || null, adminAlerts: store.support.settings(),
     aiConfigured: !!classify, aiResponseConfigured: !!present,
     aiModel: config.openaiModel || DEFAULT_MODEL, aiResponseModel: config.openaiResponseModel || config.openaiModel || DEFAULT_MODEL,
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,

@@ -145,6 +145,7 @@ function createNotifications({ config, store, shipx, line, tokens = null, clock 
     running = true;
     try {
       const groups = store.groups();
+      await tokens?.oauth?.background();
       const health = tokenSettings(config, tokens, clock().getTime());
       store.support.queueToken(health, clock().getTime());
       const adminWork = store.support.flush(line, config.origin, clock().getTime(), health, () => !stopping);
@@ -168,7 +169,7 @@ function createNotifications({ config, store, shipx, line, tokens = null, clock 
       const run = () => { if (!running && !stopping) current = tick().catch(() => console.error('Notification scheduler failed; inspect database availability.')); };
       timer = setInterval(run, 30000); timer.unref(); run();
     },
-    async stop() { stopping = true; clearInterval(timer); stopSignal.abort(); await current; },
+    async stop() { stopping = true; clearInterval(timer); stopSignal.abort(); tokens?.oauth?.cancel(); await current; },
   };
 }
 module.exports = { createNotifications };

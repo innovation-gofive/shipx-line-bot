@@ -113,9 +113,9 @@ class SupportDesk {
     });
   }
   queueToken(status, now = Date.now()) {
-    if (!['expiring','expired','unreadable'].includes(status.warning)) return;
-    const metadata = { warning: status.warning, expiresAt: status.expiresAt };
-    const key = createHash('sha256').update(JSON.stringify([status.source,status.updatedAt,status.expiresAt,status.warning])).digest('hex');
+    if (!['expiring','expired','unreadable','auto_error'].includes(status.warning)) return;
+    const metadata = { warning: status.warning, expiresAt: status.expiresAt, error:status.automatic?.lastError || null };
+    const key = createHash('sha256').update(JSON.stringify([status.source,status.updatedAt,status.expiresAt,status.warning,metadata.error])).digest('hex');
     this.db.prepare("INSERT OR IGNORE INTO admin_alert_jobs(job_key,kind,metadata,retry_key,created_at) VALUES(?,'token',?,?,?)")
       .run(`token:${key}`, JSON.stringify(metadata), randomUUID(), now);
   }
@@ -141,13 +141,13 @@ class SupportDesk {
           'โปรดรับเรื่องในหน้า Admin และตอบลูกค้าในกลุ่ม LINE เดิม', undefined, undefined, 'SHINY · ADMIN DESK');
       } else {
         const meta = JSON.parse(job.metadata);
-        if (!tokenStatus || tokenStatus.warning !== meta.warning || tokenStatus.expiresAt !== meta.expiresAt) {
+        if (!tokenStatus || tokenStatus.warning !== meta.warning || tokenStatus.expiresAt !== meta.expiresAt || (meta.error || null)!==(tokenStatus.automatic?.lastError || null)) {
           this.db.prepare("UPDATE admin_alert_jobs SET state='cancelled' WHERE job_key=?").run(job.job_key); continue;
         }
         url.searchParams.set('view','settings');
         const expiry = meta.expiresAt ? new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(meta.expiresAt) : 'ตรวจสอบในหน้าตั้งค่า';
-        reply = card('🔑 ตรวจ Token ของ ShipX', meta.warning==='expired'?'Token หมดอายุแล้ว':meta.warning==='unreadable'?'อ่าน Token ที่บันทึกไว้ไม่ได้':'Token จะหมดอายุภายใน 24 ชั่วโมง',
-          [{rows:[['วันหมดอายุ',expiry]]}], 'เปิดหน้าการเชื่อมต่อเพื่อบันทึก Token ใหม่ โดยไม่ต้อง Redeploy',undefined,undefined,'SHINY · ADMIN DESK');
+        reply = card('🔑 ตรวจ Token ของ ShipX', meta.warning==='auto_error'?'ต่ออายุ Token อัตโนมัติไม่สำเร็จ':meta.warning==='expired'?'Token หมดอายุแล้ว':meta.warning==='unreadable'?'อ่าน Token ที่บันทึกไว้ไม่ได้':'Token จะหมดอายุภายใน 24 ชั่วโมง',
+          [{rows:[['วันหมดอายุ',expiry]]}], meta.warning==='auto_error'?'เปิดหน้าการเชื่อมต่อเพื่อตรวจข้อมูลแอป GoFive และการต่ออายุอัตโนมัติ':'เปิดหน้าการเชื่อมต่อเพื่อบันทึก Token ใหม่ โดยไม่ต้อง Redeploy',undefined,undefined,'SHINY · ADMIN DESK');
       }
       reply.message.contents.footer.contents.unshift({type:'button',style:'primary',height:'sm',action:{type:'uri',label:'เปิดหน้า Admin',uri:url.href}});
       this.db.prepare('UPDATE admin_alert_jobs SET target_group_id=?,attempts=attempts+1,next_attempt=? WHERE job_key=?')
