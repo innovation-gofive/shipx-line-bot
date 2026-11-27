@@ -4,6 +4,7 @@ const { serviceError, failureReason } = require('./service-error');
 const { shipxAuth } = require('./shipx-auth');
 const { orderPage } = require('./order-page');
 const { stockOverview } = require('./stock-report');
+const { ensureCompanyAccess, accessStatus, verifyMappedAccess } = require('./shipx-access');
 const SEARCH_ENDPOINT = '/api/v2/Order/search';
 const COMPANY_ENDPOINT = '/api/v1/Company/GetListCompany';
 const VARIANT_ENDPOINT = '/api/v2/Product/variant';
@@ -140,16 +141,19 @@ class ShipXClient {
     return json;
   }
   get(endpoint, params, signal) { return this.request(endpoint, params, signal); }
-  stockOverview(companyId, signal) { return stockOverview(this, companyId, signal); }
-  async companies() {
+  async stockOverview(companyId, signal) { await ensureCompanyAccess(this,companyId,signal); return stockOverview(this, companyId, signal); }
+  accessStatus(groups) { return accessStatus(this,groups); }
+  verifyMappedAccess(groups) { return verifyMappedAccess(this,groups); }
+  async companies(signal) {
     if (this.config.demo) return [{ id: 101, name: 'ABC Logistics' }, { id: 202, name: 'บริษัท สยามรีเทล จำกัด' }];
-    const json = await this.get(COMPANY_ENDPOINT);
+    const json = await this.get(COMPANY_ENDPOINT,undefined,signal);
     if (!Array.isArray(json.data?.companies)) throw new Error('Unexpected Company response contract');
     return json.data.companies.filter(c => isCompanyId(c.companyId)).map(c => ({ id: c.companyId, name: safeText(c.companyName || c.companyId) }));
   }
   async findOrder(companyId, reference) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
     if (typeof reference !== 'string' || !REFERENCE.test(reference)) throw new Error('Invalid order reference');
+    await ensureCompanyAccess(this,companyId);
     if (this.config.demo) {
       const matches = DEMO_ORDERS.filter(o => o.companyId === companyId && exactMatch(o, reference));
       return { order: matches.length === 1 ? publicOrder(matches[0]) : null, outcome: matches.length > 1 ? 'ambiguous' : matches.length ? 'found' : 'not_found' };
@@ -171,6 +175,7 @@ class ShipXClient {
     return { order: null, outcome: 'search_limit' };
   }
   async findStock(companyId, reference) {
+    await ensureCompanyAccess(this,companyId);
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
     if (typeof reference !== 'string' || !REFERENCE.test(reference)) throw new Error('Invalid SKU');
     if (this.config.demo) {
@@ -245,6 +250,7 @@ class ShipXClient {
   }
   async orderOverview(companyId, days, now, offset = 0) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
+    await ensureCompanyAccess(this,companyId);
     const dates = reportDates(days, now, offset);
     if (this.config.demo) {
       return dates.map((date, i) => {
@@ -275,6 +281,7 @@ class ShipXClient {
   }
   async salesReport(companyId, days, now, offset = 0) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
+    await ensureCompanyAccess(this,companyId);
     const dates = reportDates(days, now, offset), from = dates.at(-1), to = dates[0];
     if (this.config.demo) return { from, to, totalOrders: companyId === 101 ? 12 * days : 0, totalItems: companyId === 101 ? 20 * days : 0, totalRevenue: companyId === 101 ? 1540 * days : 0 };
     const { data } = await this.get(SALES_ENDPOINT, { companyIds: companyId, fromDate: from, toDate: to }, AbortSignal.timeout(12000));
@@ -305,6 +312,7 @@ class ShipXClient {
     return this.listOrdersForDate(companyId, date, 'shippingDate', cancel);
   }
   async listOrdersForDate(companyId, date, dateField, cancel) {
+    await ensureCompanyAccess(this,companyId,cancel);
     const from = date + 'T00:00:00+07:00', to = date + 'T23:59:59.999+07:00';
     const range = dateField === 'shippingDate' ? { shippingStartDate: from, shippingEndDate: to } : { startDate: from, endDate: to };
     const deadline = AbortSignal.timeout(14000), ids = new Set(), orders = [];
@@ -357,9 +365,11 @@ class ShipXClient {
     }
     return groups;
   }
-  async dailyShippedOrders(companyId, now = new Date(), cancel) {
+  async dailyShippedOrders(companyId, now = new Date(), cancel, offset = 0) {
     if (!isCompanyId(companyId)) throw new Error('Company scope required');
-    const [date] = reportDates(1, now);
+    await ensureCompanyAccess(this,companyId,cancel);
+    const [date] = reportDates(1, now, offset);
+    if(offset)now=new Date(date+'T23:59:59.999+07:00');
     const summary = { date, shopee: 0, lazada: 0, tiktok: 0, express: 0, b2b: 0, b2bExpress: 0, other: 0, unknownType: 0, total: 0 };
     if (this.config.demo) {
       return companyId === 101 ? { ...summary, shopee: 120, lazada: 13, tiktok: 215, b2b: 4, b2bExpress: 1, total: 352 } : summary;
@@ -374,18 +384,21 @@ class ShipXClient {
     const fromDate = date + 'T00:00:00+07:00';
     const from = Date.parse(fromDate);
     const { data } = await get(SHIPPING_HISTORY_ENDPOINT, { companyId, fromDate, toDate: now.toISOString() });
-    if (!data || (data.batches !== null && !Array.isArray(data.batches))) throw new Error('Invalid shipping history');
+    const invalid=reason=>serviceError('ShipX',SHIPPING_HISTORY_ENDPOINT,reason);
+    if (!data || (data.batches !== null && !Array.isArray(data.batches))) throw invalid('shipping_history_not_verified');
     const ids = new Set();
     const batches = [];
     for (const batch of data.batches || []) {
       const batchId = batch?.summaryPlatformBatchId;
       const timestamp = scanTimestamp(batch?.dateCreated);
       if (batch?.companyId !== companyId || !isCompanyId(batchId) || ids.has(batchId) ||
-          !Number.isFinite(timestamp) || timestamp < from || bangkokDay.format(timestamp) !== date) {
-        throw new Error('Shipping batch ownership, identity or date not verified');
+          !Number.isFinite(timestamp)) {
+        throw invalid('shipping_batch_not_verified');
       }
       ids.add(batchId);
-      if (timestamp <= now.getTime()) batches.push(batch);
+      // History can return a wider date range. Verify ownership first, then apply
+      // the requested Bangkok date and cutoff locally without counting other days.
+      if (timestamp >= from && bangkokDay.format(timestamp) === date && timestamp <= now.getTime()) batches.push(batch);
     }
 
     const details = await mapShippingHistory(batches, async batch => {
@@ -393,31 +406,31 @@ class ShipXClient {
       const { data: detail } = await get(`${SHIPPING_HISTORY_ENDPOINT}/${batch.summaryPlatformBatchId}`);
       if (detail?.companyId !== companyId || detail.summaryPlatformBatchId !== batch.summaryPlatformBatchId ||
           scanTimestamp(detail.dateCreated) !== scanTimestamp(batch.dateCreated) || !Array.isArray(detail.items)) {
-        throw new Error('Shipping batch detail ownership, identity or date not verified');
+        throw invalid('shipping_batch_detail_not_verified');
       }
       return detail;
     });
 
     const shipped = new Map();
     for (const batch of details) {
-      if (batch.successCount > batch.items.length) throw new Error('Incomplete shipping batch detail');
+      if (batch.successCount > batch.items.length) throw invalid('shipping_batch_incomplete');
       for (const item of batch.items) {
         if (!item || typeof item.isCancelled !== 'boolean' || !Number.isSafeInteger(item.previousStatus) || !Number.isSafeInteger(item.newStatus)) {
-          throw new Error('Invalid shipping scan item');
+          throw invalid('shipping_scan_not_verified');
         }
         // V3 summaryPlatform flips the order from Packed to ReadyToShip only after all boxes are scanned.
         if (item.isCancelled || item.previousStatus !== 2003 || item.newStatus !== 2004) continue;
-        if (!isCompanyId(item.orderId)) throw new Error('Shipping scan order identity not verified');
+        if (!isCompanyId(item.orderId)) throw invalid('shipping_scan_order_not_verified');
         const channel = shippingChannel(item.platform || batch.platform);
         if (!shipped.has(item.orderId) || shipped.get(item.orderId) === 'other') shipped.set(item.orderId, channel);
-        else if (channel !== 'other' && shipped.get(item.orderId) !== channel) throw new Error('Conflicting shipping channels for order');
+        else if (channel !== 'other' && shipped.get(item.orderId) !== channel) throw invalid('shipping_channel_conflict');
       }
     }
 
     const channels = await mapShippingHistory([...shipped], async ([id, scanChannel]) => {
       const { data: order } = await get(`/api/v2/Order/${id}/detail`);
       if (order?.companyId !== companyId || order.orderId !== id || (order.expressDelivery != null && typeof order.expressDelivery !== 'boolean')) {
-        throw new Error('Shipping order ownership, identity or express flag not verified');
+        throw invalid('shipping_order_access_not_verified');
       }
       if (order.orderType === 1) return order.expressDelivery ? 'b2bExpress' : 'b2b';
       if (order.orderType !== 0) return 'unknownType';

@@ -14,9 +14,17 @@ const oauthMessages={
   oauth_token_invalid:'ข้อมูล Token ที่ได้รับยังยืนยันรูปแบบไม่ได้ กรุณาตรวจการเชื่อมต่อ',
 };
 function oauthMessage(code){return oauthMessages[code] || (code?'ขอ Token ไม่สำเร็จ กรุณาตรวจการตั้งค่า GoFive และ Audit Log':'');}
+function shipxAccessContent(access){
+  if(!access?.required&&!access?.error)return '';
+  if(access.error)return `<div class="error">ขอ Token สำเร็จ แต่ยังตรวจสิทธิ์ข้อมูล ShipX ไม่สำเร็จ (${esc(access.error)})</div>`;
+  if(!access.checked)return '<p class="notice">ยังไม่ได้ตรวจรายชื่อบริษัทด้วย Token นี้ กดเชื่อมต่อและทดสอบ Token เพื่อตรวจบริษัทที่ผูกกลุ่ม</p>';
+  if(access.missingCompanies?.length)return `<div class="error"><strong>ยังยืนยันสิทธิ์บริษัทที่ผูกกลุ่มไม่ได้</strong><p>${access.missingCompanies.map(company=>`${esc(company.name)} · ID ${company.id}`).join('<br>')}</p>ให้ผู้ดูแล GoFive/ShipX ตรวจสิทธิ์ของ Client และบัญชีบริการก่อน ระบบจะไม่แสดงยอด 0 แทนข้อมูลที่ยังอ่านไม่ได้</div>`;
+  return `<p class="notice">ตรวจรายชื่อบริษัทแล้ว: มองเห็น ${access.companyCount} บริษัท สิทธิ์ Order, Stock และ Report จะตรวจเพิ่มเติมเมื่อเรียก API แต่ละรายการ</p>`;
+}
 function oauthStatusContent(status){
-  const labels={paused:'พักการเชื่อมต่อ',configured:'รอเชื่อมต่อ',ready:'ต่ออายุอัตโนมัติพร้อมใช้งาน',retry_pending:'กำลังรอลองเชื่อมต่อใหม่',action_required:'รอผู้ดูแลตรวจการตั้งค่า'};
+  const labels={paused:'พักการเชื่อมต่อ',configured:'รอเชื่อมต่อ',ready:'ขอและต่ออายุ Token สำเร็จ',retry_pending:'กำลังรอลองเชื่อมต่อใหม่',action_required:'รอผู้ดูแลตรวจการตั้งค่า'};
   return `<div class="oauth-status-head"><span class="tag ${status.state==='ready'?'ok':status.state==='action_required'?'bad':'wait'}">${labels[status.state] || 'ยังไม่ได้ตั้งค่า'}</span></div>
+    ${status.enabled?shipxAccessContent(state.settings?.shipxAccess):''}
     ${status.lastError?`<p class="${status.state==='action_required'?'error':'notice'}">${esc(oauthMessage(status.lastError))}</p>`:''}
     ${status.lastSuccess?`<div class="setting-row"><span>เชื่อมต่อสำเร็จล่าสุด</span><span>${expiryLabel(status.lastSuccess)} น.</span></div>`:''}
     ${status.expiresAt?`<div class="setting-row"><span>Access Token หมดอายุ</span><span>${expiryLabel(status.expiresAt)} น.</span></div>`:''}
@@ -75,7 +83,7 @@ function bindOAuth(){
   });
   document.getElementById('test-shipx-oauth')?.addEventListener('click',async event=>{
     const button=event.currentTarget;button.disabled=true;
-    try{const result=await api('/api/admin/shipx/oauth/test',{method:'POST',body:'{}'});await refresh();toast(result.ok?'เชื่อมต่อ GoFive และรับ Token สำเร็จ':oauthMessage(result.status.lastError));}
+    try{const result=await api('/api/admin/shipx/oauth/test',{method:'POST',body:'{}'});await refresh();if(result.access){state.settings.shipxAccess=result.access;renderOAuthStatus();renderAdminAttention();}toast(result.ok?'ขอ Token สำเร็จและตรวจรายชื่อบริษัทแล้ว':result.tokenOk?'ขอ Token สำเร็จ แต่สิทธิ์ข้อมูลยังไม่ครบ กรุณาตรวจข้อความในหน้าตั้งค่า':oauthMessage(result.status.lastError));}
     catch(error){toast(error.message);button.disabled=false;}
   });
   document.getElementById('pause-shipx-oauth')?.addEventListener('click',async event=>{

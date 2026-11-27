@@ -165,8 +165,12 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
   app.post('/api/admin/shipx/oauth/test',limiter(3,60000),async(req,res)=>{
     if(config.demo)throw fail('Demo ไม่เรียกบริการล็อกอินจริง');
     if(!tokens?.oauth?.enabled())throw fail('กรุณาบันทึกและเปิดโหมดอัตโนมัติก่อน');
-    try{await tokens.oauth.ensure({force:true,manual:true});res.json({ok:true,status:tokens.oauth.status()});}
-    catch{res.json({ok:false,status:tokens.oauth.status()});}
+    let tokenOk=false;
+    try{
+      await tokens.oauth.ensure({force:true,manual:true});tokenOk=true;
+      const access=await shipx.verifyMappedAccess?.(store.groups());
+      res.json({ok:!access?.missingCompanies?.length,tokenOk:true,status:tokens.oauth.status(),access});
+    }catch(error){res.json({ok:false,tokenOk,status:tokens.oauth.status(),access:tokenOk?{checked:false,error:failureReason(error)}:undefined});}
   });
   app.get('/api/admin/session', (req, res) => res.json({ csrf: req.session.csrf, username: config.adminUsername }));
   app.post('/api/admin/logout', (req, res) => {
@@ -174,7 +178,7 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     res.clearCookie('shipx_session', { ...cookieOptions, maxAge: undefined }).json({ ok: true });
   });
   app.get('/api/admin/dashboard', (req, res) => res.json({ stats: { ...store.stats(), supportPending: store.support.counts().pending }, groups: store.groups(), companies: store.companies(), audit: store.audits() }));
-  app.get('/api/admin/attention', (req, res) => res.json({ counts: store.support.counts(), tokenStatus: tokenSettings(config, tokens), oauthStatus:tokens?.oauth?.status() || null, adminAlerts: store.support.settings() }));
+  app.get('/api/admin/attention', (req, res) => res.json({ counts: store.support.counts(), tokenStatus: tokenSettings(config, tokens), oauthStatus:tokens?.oauth?.status() || null, shipxAccess:shipx.accessStatus?.(store.groups()) || null, adminAlerts: store.support.settings() }));
   app.get('/api/admin/support', (req, res) => {
     if (Object.keys(req.query).some(key => !['status','query','page','caseId'].includes(key))) throw fail('ตัวกรองคำถามไม่ถูกต้อง');
     res.json(store.support.list({ status: req.query.status, query: req.query.query, page: req.query.page === undefined ? 1 : Number(req.query.page), caseId: req.query.caseId === undefined ? undefined : Number(req.query.caseId) }));
@@ -198,7 +202,7 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     demo: config.demo, appUrl: config.origin, webhookUrl: config.origin + '/webhook',
     lineConfigured: !!(config.lineSecret && config.lineToken), shipxConfigured: !!config.shipxBaseUrl && shipxStatus.configured,
     shipxBaseUrl: config.shipxBaseUrl, apiKeyConfigured: shipxStatus.apiKeyConfigured, bearerConfigured: shipxStatus.bearerConfigured,
-    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus, shipxOAuthStatus:tokens?.oauth?.status() || null, adminAlerts: store.support.settings(),
+    shipxAuthMode: shipxStatus.mode, shipxTokenStatus: shipxStatus, shipxOAuthStatus:tokens?.oauth?.status() || null, shipxAccess:shipx.accessStatus?.(store.groups()) || null, adminAlerts: store.support.settings(),
     aiConfigured: !!classify, aiResponseConfigured: !!present,
     aiModel: config.openaiModel || DEFAULT_MODEL, aiResponseModel: config.openaiResponseModel || config.openaiModel || DEFAULT_MODEL,
     searchEndpoint: SEARCH_ENDPOINT, companyEndpoint: COMPANY_ENDPOINT,
@@ -234,7 +238,9 @@ async function createApp({ config, store, shipx, line, tokens = null }) {
     }
     store.saveCompanies(companies);
     store.audit({ actor: config.adminUsername, action: 'companies.sync', outcome: 'success' });
-    res.json({ companies });
+    shipx.companyAccess=null;
+    const access=await shipx.verifyMappedAccess?.(store.groups());
+    res.json({ companies,access });
   });
   app.put('/api/admin/groups/:id', (req, res) => {
     const b = req.body || {};

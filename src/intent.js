@@ -10,7 +10,8 @@ const lowStockWords = /ใกล้หมด|จุดสั่งซื้อ|�
 const salesWords = /ยอดขาย|รายได้|\bsales\b/i;
 const summaryWords = /สรุป|รายงาน|ภาพรวม|กี่(?:ออเดอร์|รายการ|งาน)|ค้าง|ยังไม่แพ[็คก]|รอแพ[็คก]|\b(?:overview|report|pending)\b/i;
 const shippingWords = /(?:ต้อง|กำหนด|รอ|เตรียม|ครบกำหนด)\s*(?:จัด)?ส่ง|ส่ง\s*(?:วันนี้|เมื่อวาน)|\b(?:due|shipping|dispatch)\b/i;
-const shippedReportWords = /(?:สรุป|รายงาน).*(?:จัดส่ง(?:รายวัน|วันนี้)|ส่งออก|ส่ง(?:ไป)?แล้ว)|(?:ส่งออก|จัดส่งแล้ว|ส่งไปแล้ว)\s*(?:วันนี้)?\s*(?:กี่|เท่าไหร่|เท่าไร)/;
+const shippedReportWords = /(?:สรุป|รายงาน).*(?:การจัดส่ง|จัดส่ง(?:รายวัน|วันนี้)|ส่งออก|ส่ง(?:ไป)?แล้ว)|(?:ส่งออก|จัดส่งแล้ว|ส่งไปแล้ว)\s*(?:วันนี้|เมื่อวาน(?:ซืน)?)?\s*(?:กี่|เท่าไหร่|เท่าไร)/;
+const rankingWords = /ขายดี|อันดับ|bestseller|top.?sell/i;
 const dueReportWords = /(?:ต้อง|กำหนด|รอ|เตรียม|ครบกำหนด)\s*(?:จัด)?ส่ง|แพ[็คก]|หยิบ|ยังไม่|ค้าง/;
 const issueWords = /ปัญหา|ยังไม่|ยังไม่ได้|ไม่เสร็จ|ค้าง|เตือน|\b(?:issues|problem|unfinished)\b/i;
 const unsupportedDates = /สัปดาห์|อาทิตย์|เดือน|ปีนี้|ปีก่อน|ตั้งแต่|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}|\b(?:week|month|year)\b/i;
@@ -61,7 +62,6 @@ function route(type, text, refs) {
   if (['shipping', 'shipping_issues', 'daily_shipped'].includes(type)) {
     const period = reportPeriod(text);
     if (!period || refs.length || /ย้อนหลัง|\blast\b|[23]\s*(?:วัน|days?)/i.test(text)) return { type: 'help' };
-    if (type === 'daily_shipped' && period.offset) return { type: 'help' };
     return { type, days: 1, ...(period.offset ? { offset: period.offset } : {}) };
   }
   if (type === 'overview' || type === 'sales') {
@@ -75,6 +75,7 @@ function parseCommand(text) {
   if (typeof text !== 'string' || text.length > 250) return null;
   const clean = text.trim().replace(/[?!！？。]+$/u, '').trim();
   if (blocked.test(clean)) return null;
+  if(stockWords.test(clean)&&rankingWords.test(clean))return {type:'help'};
   if (/^(help|ช่วยเหลือ|วิธีใช้)$/i.test(clean)) return { type: 'help' };
   const exact = /^(order|status|สถานะ(?:ออเดอร์)?|เช็ค(?:สถานะ)?|stock|สต๊อก|สต็อก)\s+([A-Za-z0-9][A-Za-z0-9._/-]{0,99})$/i.exec(clean);
   if (exact) return route(stockWords.test(exact[1]) ? 'stock' : 'order', clean, [exact[2]]);
@@ -102,7 +103,7 @@ const toolsByType = {
   sales: ['get_sales_report', 'Read sales totals for the requested period.'],
   shipping: ['get_shipping_progress', 'Read orders scheduled for shipping on a date, calculate how many are due, packed, not yet packed, shipped, and percentage packed.'],
   shipping_issues: ['get_shipping_issues', 'Find scheduled-shipping orders that are not packed or have an issue and need attention before shipping.'],
-  daily_shipped: ['get_daily_shipped', 'Read the completed outbound scans and the shipping summary for today.'],
+  daily_shipped: ['get_daily_shipped', 'Read completed outbound scans for today, yesterday or the day before yesterday. Dates are bound locally.'],
   help: ['show_help', 'Use for unclear, unsupported, or unrelated questions.'],
 };
 function createClassifier(config, fetcher = fetch) {
@@ -136,6 +137,7 @@ function createClassifier(config, fetcher = fetch) {
 
 async function interpret(text, classify, allowedTypes) {
   const fallback = parseCommand(text);
+  if(typeof text==='string'&&stockWords.test(text)&&rankingWords.test(text))return {type:'help'};
   if (!classify || typeof text !== 'string' || text.length > 250) return fallback || { type: 'help' };
   text = text.trim().replace(/[?!！？。]+$/u, '').trim();
   if (blocked.test(text)) return fallback || { type: 'help' };

@@ -5,6 +5,7 @@ const GROUP_ID = /^C[0-9a-f]{32}$/i;
 const invalid = (message, status = 400) => Object.assign(new Error(message), { status });
 const caseNumber = id => `SH-${String(id).padStart(6, '0')}`;
 const reasons = {
+  company_access_not_verified:'ยังยืนยันสิทธิ์ข้อมูลบริษัทไม่ได้',
   unsupported: 'ยังไม่เข้าใจคำถาม', upstream_error: 'ตรวจข้อมูลจาก ShipX ไม่สำเร็จ',
   configuration_required: 'ต้องตรวจการตั้งค่า', stock_unavailable: 'ยังตรวจยอดสต๊อกไม่ได้',
   ambiguous: 'ยังระบุรายการเดียวไม่ได้', search_limit: 'ค้นหาเกินขอบเขต',

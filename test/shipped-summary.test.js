@@ -47,7 +47,7 @@ test('counts completed outbound orders once, separates Express and B2B, and uses
 test('shipping summaries fail closed when ShipX cannot verify batch or order detail scope', async () => {
   const cases = [
     { list: batch(10, [], { companyId: 202 }) },
-    { list: batch(10, [], { dateCreated: '2026-11-10T16:59:59Z' }) },
+    { list: batch(10, [], { dateCreated: 'invalid-date' }) },
     { list: batch(10, null), detail: batch(10, [scan(1)], { companyId: 202 }) },
     { list: batch(10, null), detail: batch(10, [scan(1)], { dateCreated: '2026-11-11T11:01:00Z' }) },
     { list: batch(10, [scan(1)]), order: { orderId: 1, companyId: 202, expressDelivery: true } },

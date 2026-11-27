@@ -4,6 +4,7 @@ function serviceError(service, endpoint, reason, status) {
 }
 
 function failureReason(error) {
+  if (['company_access_not_verified','company_access_context_changed'].includes(error?.reason)) return `HTTP 403 (${error.reason})`;
   if (Number.isInteger(error?.statusCode)) return `HTTP ${error.statusCode}`;
   if (error?.name === 'TimeoutError') return 'timeout';
   if (error?.name === 'AbortError') return 'aborted';

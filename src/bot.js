@@ -31,7 +31,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
     if (!active(current) || current.company_id !== group.company_id || current.revision !== group.revision) return plain('การตั้งค่ากลุ่มเปลี่ยนระหว่างสอบถาม กรุณาลองใหม่อีกครั้งค่ะ');
     const item = escalate && requestId ? store.support.create({ requestId, group, actor, question:audit.question, reason, detail }) : null;
     if (item) store.audit({ ...audit, action:'support.open',outcome:'open',reference:String(item.id) });
-    return { ...handoffReply(item?.id, group.company_name), revision:group.revision };
+    return { ...handoffReply(item?.id, group.company_name,reason), revision:group.revision };
   };
   if (!active(group)) {
     store.audit({ ...audit, outcome: 'denied' });
@@ -75,7 +75,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
     return plain(`กลุ่มนี้ยังไม่มีสิทธิ์${feature.label} กรุณาติดต่อผู้ดูแลค่ะ`);
   }
   if (!stillAllowed()) return changed();
-  let reply, outcome, nextStockPage = null, configurationRequired = false;
+  let reply, outcome, nextStockPage = null, configurationRequired = false, accessUnavailable = false;
   audit.endpoint = feature.endpoint;
   try {
     if (command.type === 'order') {
@@ -96,8 +96,8 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
       reply = shippingReply(await shipx.shippingProgress(group.company_id, new Date(), command.offset || 0), command.type === 'shipping_issues');
       outcome = 'success';
     } else if (command.type === 'daily_shipped') {
-      const now = new Date();
-      reply = dailyShippedReply(await shipx.dailyShippedOrders(group.company_id, now, AbortSignal.timeout(20000)), group.company_name, bangkokTime.format(now), shipx.config?.origin);
+      const now = new Date(),offset=command.offset || 0;
+      reply = dailyShippedReply(await shipx.dailyShippedOrders(group.company_id, now, AbortSignal.timeout(20000),offset), group.company_name, offset?'23:59':bangkokTime.format(now), shipx.config?.origin);
       outcome = 'success';
     } else {
       const now = new Date(), offset = command.offset || 0;
@@ -106,6 +106,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
       outcome = 'success';
     }
   } catch (error) {
+    accessUnavailable = ['company_access_not_verified','company_access_context_changed'].includes(error.reason);
     configurationRequired = error.code === 'shipping_date_unconfirmed';
     outcome = configurationRequired ? 'configuration_required' : 'upstream_error';
     audit.endpoint = error.endpoint || audit.endpoint;
@@ -134,6 +135,7 @@ async function answerCommand({ store, shipx, groupId, text, actor = null, questi
     return { ...addChoices(reply, store, group, command.type.startsWith('stock') ? ['reorder', 'stock', 'orders'] : ['orders', 'packing', 'delivery']), revision: group.revision };
   }
   if (configurationRequired) return handoff('configuration_required', audit.detail);
+  if (accessUnavailable) return handoff('company_access_not_verified',audit.detail);
   if (outcome === 'not_found') return plain(command.type === 'stock' ? 'ไม่พบ SKU หรือบาร์โค้ดนี้ในบริษัทที่ผูกกับกลุ่ม กรุณาตรวจสอบรหัสสินค้าอีกครั้งค่ะ' : NOT_FOUND);
   return handoff(['stock_unavailable','ambiguous','search_limit'].includes(outcome) ? outcome : 'upstream_error', audit.detail);
 }

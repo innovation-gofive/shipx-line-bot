@@ -3,7 +3,7 @@ const supportLink = new URLSearchParams(location.search);
 const supportState = { data:null, busy:false, status:supportLink.has('case')?'all':'pending', query:'', page:1,
   caseId:/^[1-9]\d*$/.test(supportLink.get('case') || '')?Number(supportLink.get('case')):null };
 const supportLabels = { open:'รอรับเรื่อง',in_progress:'กำลังตรวจสอบ',resolved:'ตอบแล้ว / ปิดเรื่อง' };
-const supportReasons = { unsupported:'ยังไม่เข้าใจคำถาม',upstream_error:'ตรวจข้อมูลจาก ShipX ไม่สำเร็จ',configuration_required:'ต้องตรวจการตั้งค่า',stock_unavailable:'ตรวจยอดสต๊อกไม่ได้',ambiguous:'ยังระบุรายการเดียวไม่ได้',search_limit:'ค้นหาเกินขอบเขต' };
+const supportReasons = { company_access_not_verified:'ยังยืนยันสิทธิ์ข้อมูลบริษัทไม่ได้',unsupported:'ยังไม่เข้าใจคำถาม',upstream_error:'ตรวจข้อมูลจาก ShipX ไม่สำเร็จ',configuration_required:'ต้องตรวจการตั้งค่า',stock_unavailable:'ตรวจยอดสต๊อกไม่ได้',ambiguous:'ยังระบุรายการเดียวไม่ได้',search_limit:'ค้นหาเกินขอบเขต' };
 const expiryLabel = value => new Intl.DateTimeFormat('th-TH',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Bangkok'}).format(value);
 function tokenWarningText(status) {
   if (!status) return '';
@@ -15,8 +15,10 @@ function renderAdminAttention() {
   const target=document.getElementById('admin-attention'); if(!target)return;
   const pending=state.data?.stats.supportPending || 0, token=state.settings?.shipxTokenStatus, warning=state.demo&&token?.warning==='missing'?'':tokenWarningText(token);
   const notify=state.settings?.adminAlerts;
+  const missing=state.settings?.shipxAccess?.missingCompanies || [];
   target.innerHTML=`${warning?`<div class="attention-banner ${token.warning==='expired'||token.warning==='unreadable'?'urgent':''}" role="status"><div><strong>🔑 ดูแลการเชื่อมต่อ ShipX</strong><p>${esc(warning)}</p></div><button class="btn" data-attention-nav="settings">อัปเดต Token</button></div>`:''}
     ${pending&&state.page!=='unanswered'?`<div class="attention-banner support-attention" role="status"><div><strong>💬 มี ${pending} คำถามรอทีมดูแล</strong><p>รับเรื่องและติดตามคำถามที่ Shiny ยังตอบไม่ได้</p></div><button class="btn primary" data-attention-nav="unanswered">เปิดคิวคำถาม</button></div>`:''}
+    ${missing.length?`<div class="attention-banner urgent"><div><strong>Token เชื่อมต่อได้ แต่ยังยืนยันสิทธิ์ข้อมูลบริษัทไม่ได้</strong><p>${missing.map(company=>`${esc(company.name)} (ID ${company.id})`).join(', ')} · ให้ผู้ดูแลตรวจสิทธิ์ GoFive/ShipX</p></div><button class="btn" data-attention-nav="settings">ตรวจสิทธิ์ข้อมูล</button></div>`:''}
     ${notify?.enabled&&!notify.ready?'<div class="attention-banner urgent"><div><strong>แจ้งเตือน LINE ของทีม Admin ยังไม่พร้อม</strong><p>ตรวจว่าบอทยังอยู่ในกลุ่ม และกลุ่มนี้ไม่ได้ผูกบริษัทลูกค้า</p></div><button class="btn" data-attention-nav="settings">ตรวจการตั้งค่า</button></div>':''}`;
   target.querySelectorAll('[data-attention-nav]').forEach(button=>button.addEventListener('click',()=>openAdminPage(button.dataset.attentionNav)));
   const badge=document.getElementById('support-nav-count');if(badge){badge.textContent=pending;badge.hidden=!pending;}
@@ -87,7 +89,7 @@ function bindSupport() {
 let adminAttentionBusy=false;
 async function pollAdminAttention() {
   if(!state.user||!state.data||document.hidden||adminAttentionBusy)return;adminAttentionBusy=true;
-  try{const result=await api('/api/admin/attention');state.data.stats.supportPending=result.counts.pending;state.settings.shipxTokenStatus=result.tokenStatus;state.settings.shipxOAuthStatus=result.oauthStatus;state.settings.adminAlerts=result.adminAlerts;renderAdminAttention();renderOAuthStatus();}
+  try{const result=await api('/api/admin/attention');state.data.stats.supportPending=result.counts.pending;state.settings.shipxTokenStatus=result.tokenStatus;state.settings.shipxOAuthStatus=result.oauthStatus;state.settings.shipxAccess=result.shipxAccess;state.settings.adminAlerts=result.adminAlerts;renderAdminAttention();renderOAuthStatus();}
   catch{/* The next poll or refresh can recover without interrupting a note being typed. */}finally{adminAttentionBusy=false;}
 }
 setInterval(pollAdminAttention,30000);

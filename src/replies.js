@@ -56,9 +56,9 @@ function card(title, subtitle, sections, note, altDetail = subtitle, metric, foo
 }
 function withVariables(reply, variables) { reply.view.variables = variables; return reply; }
 
-function handoffReply(id, companyName) {
+function handoffReply(id, companyName, reason) {
   const reference = id ? `SH-${String(id).padStart(6,'0')}` : 'รอตรวจสอบเพิ่มเติม';
-  return card('💬 ให้แอดมินช่วยดูต่อค่ะ', 'Shiny ยังยืนยันคำตอบนี้ไม่ได้ค่ะ',
+  return card('💬 ให้แอดมินช่วยดูต่อค่ะ', reason==='company_access_not_verified'?'ขณะนี้ Shiny ยังตรวจสอบข้อมูลบริษัทนี้ไม่ได้ค่ะ':'Shiny ยังยืนยันคำตอบนี้ไม่ได้ค่ะ',
     [{ rows:[['สถานะ','รอแอดมินตรวจสอบ'],...(id ? [['เลขรับเรื่อง',reference]] : [])], detail:'รอทางแอดมินตรวจสอบเพิ่มเติมให้นะคะ 💛' }],
     id ? 'บันทึกคำถามให้ทีมดูแลแล้วค่ะ' : 'แอดมินจะช่วยตรวจข้อมูลเพิ่มเติมให้ค่ะ', reference,undefined,companyName || 'Shiny × ShipX',
     {color:'#9C650C',background:'#FFF1CF'});
